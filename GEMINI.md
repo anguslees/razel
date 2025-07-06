@@ -1,24 +1,19 @@
 # Razel Project Details for AI Agents
 
-This document outlines key architectural and technological choices for the Razel project.
+`razel` seeks to be a drop-in modern replacement for `bazel` command line build tool.
+
+It is implemented in Rust, understands bazel MODULE.bazel and BUILD.bazel files, takes full advantage of Remote Build Execution protocol, and leans heavily on Rust async Futures for lazy evaluation.  Unlike `bazel`, it does not hold an exclusive lock during execution and does not use a separate server process.
 
 ## Core Technologies
 
 *   **Language**: Rust
-    *   Chosen for its performance, memory safety, and concurrency features.
 *   **Asynchronous Runtime**: Tokio
-    *   To enable high-concurrency and efficient I/O operations.
 *   **gRPC Framework**: Tonic
-    *   For communication between Razel components and potentially with other services, compatible with Bazel's gRPC APIs.
 *   **Tracing and Logging**: Fastrace
-    *   For detailed performance tracing and logging, helping in diagnostics and optimization.
 
 ## Subcommands
 
-The primary interface will be through subcommands mirroring Bazel's CLI.
-
-*   `razel version`: Displays the current version of Razel.
-*   Other subcommands (e.g., `build`, `test`, `run`, `query`): Initially, these will be placeholders (`unimplemented!()`) and will be developed incrementally.
+The `razel` command must mimick the `bazel` command, with the same subcommands.  Command line flags may differ, but should follow bazel wherever possible.
 
 ## Development Guidelines
 

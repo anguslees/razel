@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use fastrace::collector::ConsoleReporter;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -36,8 +37,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
-    // It's good practice to initialize tracing early.
-    // fastrace::init_trace("razel").expect("Failed to init trace");
+    fastrace::set_reporter(ConsoleReporter, fastrace::collector::Config::default());
 
     let cli = Cli::parse();
 
@@ -64,4 +64,6 @@ async fn main() {
             unimplemented!("Query command is not yet implemented.");
         }
     }
+
+    fastrace::flush();
 }
