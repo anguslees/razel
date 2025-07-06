@@ -20,3 +20,4 @@ The `razel` command must mimick the `bazel` command, with the same subcommands. 
 *   Follow standard Rust coding conventions.
 *   Write unit and integration tests for new features.
 *   Ensure code is well-documented.
+*   Run `cargo fmt --all -- --check` to ensure proper formatting before committing Rust code.
