@@ -1,6 +1,6 @@
-use std::process::Command;
 use assert_cmd::prelude::*; // Add methods on commands
 use predicates::prelude::*; // Used for writing assertions
+use std::process::Command;
 
 #[test]
 fn test_razel_version() -> Result<(), Box<dyn std::error::Error>> {
