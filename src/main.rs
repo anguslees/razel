@@ -48,19 +48,19 @@ async fn main() {
             println!("Razel version: {}", env!("CARGO_PKG_VERSION"));
         }
         Commands::Build { targets } => {
-            println!("Building targets: {:?}", targets);
+            println!("Building targets: {targets:?}");
             unimplemented!("Build command is not yet implemented.");
         }
         Commands::Test { targets } => {
-            println!("Testing targets: {:?}", targets);
+            println!("Testing targets: {targets:?}");
             unimplemented!("Test command is not yet implemented.");
         }
         Commands::Run { target } => {
-            println!("Running target: {}", target);
+            println!("Running target: {target}");
             unimplemented!("Run command is not yet implemented.");
         }
         Commands::Query { query } => {
-            println!("Querying: {}", query);
+            println!("Querying: {query}");
             unimplemented!("Query command is not yet implemented.");
         }
     }
