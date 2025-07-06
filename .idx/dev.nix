@@ -6,13 +6,8 @@
 
   # Use https://search.nixos.org/packages to find packages
   packages = [
-    # pkgs.go
-    # pkgs.python311
-    # pkgs.python311Packages.pip
-    # pkgs.nodejs_20
-    # pkgs.nodePackages.nodemon
-    pkgs.cargo
-    pkgs.rustfmt
+    pkgs.clang
+    pkgs.rustup
     pkgs.bazelisk
   ];
 
@@ -25,6 +20,7 @@
       "github.vscode-pull-request-github"
       "google.geminicodeassist"
       "rust-lang.rust-analyzer"
+      "tamasfe.even-better-toml"
     ];
 
     # Enable previews
@@ -50,7 +46,7 @@
       onCreate = {
         # Example: install JS dependencies from NPM
         # npm-install = "npm install";
-        cargo-fetch = "cargo fetch";
+        rustup-install = "rustup update && cargo fetch";
       };
       # Runs when the workspace is (re)started
       onStart = {
