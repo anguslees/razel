@@ -1,0 +1,12 @@
+version = 1
+
+[merge]
+# Do not require a specific label for Kodiak to merge a PR.
+# Kodiak will merge when branch protection rules (status checks, approvals) pass.
+require_automerge_label = false
+
+# Use squash merging.
+method = "squash"
+
+# Delete the branch after merging.
+delete_branch_on_merge = true
