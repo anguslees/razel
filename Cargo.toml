@@ -1,0 +1,10 @@
+[package]
+name = "razel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tonic = "0.11"
+fastrace = "0.7"
+clap = { version = "4", features = ["derive"] }
