@@ -216,7 +216,7 @@ jobs:
 
       - name: 'Run Gemini'
         id: 'run_gemini'
-        uses: 'google-github-actions/run-gemini-cli@v0'
+        uses: 'google-github-actions/run-gemini-cli@20351b5ea2b4179431f1ae8918a246a0808f8747' # v0
         env:
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
           REPOSITORY: '${{ github.repository }}'
