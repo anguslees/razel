@@ -11,20 +11,18 @@
     pkgs.cargo
     pkgs.rustc
     pkgs.rustfmt
+    pkgs.clippy
     pkgs.stdenv.cc
   ];
 
   # Sets environment variables in the workspace
-  env = {
-    RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
-
-    # append an entry to PATH
-    PATH = [
-      "/home/user/bin"
-      "/home/user/.local/bin"
-      "/home/user/.cargo/bin"
-    ];
+  env = {};
+  services = {
+    docker = {
+      enable = true;
+    };
   };
+
   idx = {
     # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
     extensions = [
@@ -66,6 +64,7 @@
       onStart = {
         # Example: start a background task to watch and re-build backend code
         # watch-backend = "npm run watch-backend";
+        start-qdrant = "docker run -p 6333:6333 -p 6334:6334 -v $HOME/.cache/qdrant_storage:/qdrant/storage qdrant/qdrant";
       };
     };
   };
