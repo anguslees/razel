@@ -1,14 +1,15 @@
+use crate::bazel::Configuration;
 use clap::{Parser, Subcommand};
 use fastrace::collector::ConsoleReporter;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+use tracing_indicatif::IndicatifLayer;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod bazel;
 mod query;
 mod starlark;
 mod workspace;
-
-use crate::bazel::Configuration;
-use std::sync::Arc;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -48,12 +49,15 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     let mut stdout = tokio::io::stdout();
 
-    fastrace::set_reporter(ConsoleReporter, fastrace::collector::Config::default());
-
     let cli = Cli::parse();
 
     // TODO: initialise config from flags
     let config = Arc::new(Configuration::new());
+
+    fastrace::set_reporter(ConsoleReporter, fastrace::collector::Config::default());
+    tracing_subscriber::registry()
+        .with(IndicatifLayer::new())
+        .init();
 
     match &cli.command {
         Commands::Version => {
