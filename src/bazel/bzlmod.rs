@@ -11,6 +11,7 @@ use crate::starlark::globals::module::{ModuleBuilder, ModuleExtra, RepoExtra};
 
 /// MODULE.bazel file
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Module {
     pub name: String,
     pub version: String,
@@ -102,17 +103,20 @@ async fn eval_module_include(path: &Path, is_root: bool) -> anyhow::Result<Modul
 }
 
 /// REPO.bazel
+#[allow(dead_code)]
 pub struct Repo {
     ignore_directories: Vec<String>,
     repo: SmallMap<String, String>,
 }
 
+#[allow(dead_code)]
 static REPO_GLOBALS: LazyLock<Globals> = LazyLock::new(|| {
     GlobalsBuilder::standard()
         .with(crate::starlark::globals::module::repo_bazel)
         .build()
 });
 
+#[allow(dead_code)]
 pub(crate) async fn eval_repo(path: &Path) -> anyhow::Result<Module> {
     let repo_bazel = RepoExtra::new();
 

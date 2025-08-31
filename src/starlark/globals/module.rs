@@ -9,9 +9,9 @@ use starlark::values::none::{NoneOr, NoneType};
 use starlark::values::tuple::UnpackTuple;
 use starlark::values::{NoSerialize, StarlarkValue, Value, starlark_value};
 use starlark::{starlark_module, starlark_simple_value};
+use std::cell::{RefCell, RefMut};
 use std::default::Default;
 use std::sync::{Mutex, MutexGuard};
-use std::cell::{RefCell, RefMut};
 
 #[derive(Debug, Display, ProvidesStaticType, NoSerialize, Allocative)]
 struct ModuleExtensionProxy;
@@ -62,11 +62,14 @@ impl ModuleExtra {
     }
 
     pub fn new_root() -> Self {
-        let mut builder = ModuleBuilder::default();
-        builder.is_root_module = true;
+        let builder = ModuleBuilder {
+            is_root_module: true,
+            ..Default::default()
+        };
         Self(RefCell::new(builder))
     }
 
+    #[allow(dead_code)]
     pub fn with_ignore_dev_dependency(mut self, ignore_dev_dependency: bool) -> Self {
         self.0.get_mut().ignore_dev_dependency = ignore_dev_dependency;
         self
@@ -308,6 +311,7 @@ pub(crate) struct RepoBuilder {
 pub(crate) struct RepoExtra(Mutex<RepoBuilder>);
 
 impl RepoExtra {
+    #[allow(dead_code)]
     pub(crate) fn new() -> Self {
         Self(Mutex::new(RepoBuilder::default()))
     }
