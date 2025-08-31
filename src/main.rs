@@ -1,5 +1,14 @@
 use clap::{Parser, Subcommand};
 use fastrace::collector::ConsoleReporter;
+use tokio::io::AsyncWriteExt;
+
+mod query;
+mod starlark;
+mod bazel;
+mod workspace;
+
+use crate::bazel::Configuration;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -36,10 +45,15 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
+    let mut stdout = tokio::io::stdout();
+
     fastrace::set_reporter(ConsoleReporter, fastrace::collector::Config::default());
 
     let cli = Cli::parse();
+
+    // TODO: initialise config from flags
+    let config = Arc::new(Configuration::new());
 
     match &cli.command {
         Commands::Version => {
@@ -59,11 +73,13 @@ async fn main() {
             println!("Running target: {target}");
             unimplemented!("Run command is not yet implemented.");
         }
-        Commands::Query { query } => {
-            println!("Querying: {query}");
-            unimplemented!("Query command is not yet implemented.");
+        Commands::Query { query: query_str } => {
+            println!("Querying: {query_str}");
+            query::query(&mut stdout, config, query_str).await?;
         }
     }
 
     fastrace::flush();
+    stdout.flush().await?;
+    Ok(())
 }

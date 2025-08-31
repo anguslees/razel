@@ -7,20 +7,33 @@
   # Use https://search.nixos.org/packages to find packages
   packages = [
     pkgs.clang
-    pkgs.rustup
     pkgs.bazelisk
+    pkgs.cargo
+    pkgs.rustc
+    pkgs.rustfmt
+    pkgs.stdenv.cc
   ];
 
   # Sets environment variables in the workspace
-  env = {};
+  env = {
+    RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+
+    # append an entry to PATH
+    PATH = [
+      "/home/user/bin"
+      "/home/user/.local/bin"
+      "/home/user/.cargo/bin"
+    ];
+  };
   idx = {
     # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
     extensions = [
-      # "vscodevim.vim"
       "github.vscode-pull-request-github"
       "google.geminicodeassist"
       "rust-lang.rust-analyzer"
       "tamasfe.even-better-toml"
+      "serayuzgur.crates"
+      "vadimcn.vscode-lldb"
     ];
 
     # Enable previews
@@ -44,9 +57,10 @@
     workspace = {
       # Runs when a workspace is first created
       onCreate = {
+        default.openFiles = [ "src/main.rs" ];
         # Example: install JS dependencies from NPM
         # npm-install = "npm install";
-        rustup-install = "rustup update && cargo fetch";
+        cargo-fetch = "cargo fetch";
       };
       # Runs when the workspace is (re)started
       onStart = {

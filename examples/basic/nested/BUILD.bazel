@@ -1,0 +1,5 @@
+genrule(
+    name = "hello_world_nested",
+    outs = ["hello_nested.txt"],
+    cmd = "echo \"Hello, nested world!\" > \"$@\"",
+)
