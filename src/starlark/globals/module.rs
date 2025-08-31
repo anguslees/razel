@@ -9,9 +9,9 @@ use starlark::values::none::{NoneOr, NoneType};
 use starlark::values::tuple::UnpackTuple;
 use starlark::values::{NoSerialize, StarlarkValue, Value, starlark_value};
 use starlark::{starlark_module, starlark_simple_value};
+use std::cell::{RefCell, RefMut};
 use std::default::Default;
 use std::sync::{Mutex, MutexGuard};
-use std::cell::{RefCell, RefMut};
 
 #[derive(Debug, Display, ProvidesStaticType, NoSerialize, Allocative)]
 struct ModuleExtensionProxy;

@@ -2,9 +2,9 @@ use clap::{Parser, Subcommand};
 use fastrace::collector::ConsoleReporter;
 use tokio::io::AsyncWriteExt;
 
+mod bazel;
 mod query;
 mod starlark;
-mod bazel;
 mod workspace;
 
 use crate::bazel::Configuration;
