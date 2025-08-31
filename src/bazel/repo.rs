@@ -4,6 +4,7 @@ pub type Digest = bazel_remote_apis::build::bazel::remote::execution::v2::Digest
 pub type DigestFunction =
     bazel_remote_apis::build::bazel::remote::execution::v2::digest_function::Value;
 
+#[allow(dead_code)]
 pub trait File {
     type AsyncRead: io::AsyncRead;
 
@@ -14,6 +15,7 @@ pub trait File {
     async fn digest(&self, digest_function: DigestFunction) -> Result<Digest, std::io::Error>;
 }
 
+#[allow(dead_code)]
 pub trait Repository {
     type File: File;
 
@@ -59,6 +61,7 @@ pub struct TokioRepository {
 }
 
 impl TokioRepository {
+    #[allow(dead_code)]
     pub fn new(root: std::path::PathBuf) -> Self {
         Self { root }
     }
@@ -89,8 +92,8 @@ impl Repository for TokioRepository {
 #[cfg(test)]
 pub mod test {
     use super::*;
-    use std::{collections::HashMap, sync::Arc};
-    use tokio::io::{self, AsyncReadExt};
+    use std::collections::HashMap;
+    use tokio::io::{self};
 
     pub struct InMemoryFile {
         content: Vec<u8>,
@@ -123,6 +126,7 @@ pub mod test {
     }
 
     impl InMemoryRepository {
+        #[allow(dead_code)]
         pub fn new(files: HashMap<String, Vec<u8>>) -> Self {
             Self { files }
         }

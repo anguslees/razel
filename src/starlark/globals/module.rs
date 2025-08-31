@@ -62,11 +62,14 @@ impl ModuleExtra {
     }
 
     pub fn new_root() -> Self {
-        let mut builder = ModuleBuilder::default();
-        builder.is_root_module = true;
+        let builder = ModuleBuilder {
+            is_root_module: true,
+            ..Default::default()
+        };
         Self(RefCell::new(builder))
     }
 
+    #[allow(dead_code)]
     pub fn with_ignore_dev_dependency(mut self, ignore_dev_dependency: bool) -> Self {
         self.0.get_mut().ignore_dev_dependency = ignore_dev_dependency;
         self
@@ -308,6 +311,7 @@ pub(crate) struct RepoBuilder {
 pub(crate) struct RepoExtra(Mutex<RepoBuilder>);
 
 impl RepoExtra {
+    #[allow(dead_code)]
     pub(crate) fn new() -> Self {
         Self(Mutex::new(RepoBuilder::default()))
     }

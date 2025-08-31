@@ -2,6 +2,7 @@ pub(crate) mod bzlmod;
 pub(crate) mod repo;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) struct Configuration {
     pub ignore_dev_dependency: bool,
 }

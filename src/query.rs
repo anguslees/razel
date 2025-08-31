@@ -1,5 +1,4 @@
 use std::marker::Unpin;
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
@@ -7,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 use crate::bazel::Configuration;
 use crate::workspace::Workspace;
 
-pub async fn query<W>(out: &mut W, _config: Arc<Configuration>, _query: &str) -> anyhow::Result<()>
+pub async fn query<W>(out: &mut W, _config: Arc<Configuration>, query: &str) -> anyhow::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -29,8 +28,7 @@ where
 
     // Parse/execute query.  Simplest is a list of targets.
 
-    out.write_all(b"not real output\n").await?;
+    out.write_all(query.as_bytes()).await?;
 
-    unimplemented!();
     Ok(())
 }
