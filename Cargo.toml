@@ -9,7 +9,7 @@ tonic = { version = "0.14", features = ["zstd", "tls-native-roots"] }
 fastrace = { version = "0.7", features = ["enable"] }
 starlark = "0.13"
 allocative = "0.3"
-derive_more = "0.99.17"
+derive_more = "2.0.0"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1.0"
 erased-serde = "0.4"
