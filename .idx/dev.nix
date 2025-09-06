@@ -3,7 +3,12 @@
 { pkgs, ... }:
 
 let
-  rpkgs = pkgs.extend (import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz"));
+  rpkgs = pkgs.extend (import (pkgs.fetchFromGitHub {  
+    owner = "oxalica";  
+    repo = "rust-overlay";  
+    rev = "fb6dab6";  
+    sha256 = "0fia1kgl0ddqz4k0gl69d668qzldngn3kyc3dbf54x6z84rnqqk1";  
+  }));
 
 in {
   # Which nixpkgs channel to use.
