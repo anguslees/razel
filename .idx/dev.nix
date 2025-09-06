@@ -1,18 +1,20 @@
 # To learn more about how to use Nix to configure your environment
 # see: https://firebase.google.com/docs/studio/customize-workspace
-{ pkgs, ... }: {
+{ pkgs, ... }:
+
+let
+  rpkgs = pkgs.extend (import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz"));
+
+in {
   # Which nixpkgs channel to use.
   channel = "stable-25.05"; # or "unstable"
 
   # Use https://search.nixos.org/packages to find packages
-  packages = [
-    pkgs.clang
-    pkgs.bazelisk
-    pkgs.cargo
-    pkgs.rustc
-    pkgs.rustfmt
-    pkgs.clippy
-    pkgs.stdenv.cc
+  packages = with rpkgs; [
+    clang
+    bazelisk
+    stdenv.cc
+    (rust-bin.fromRustupToolchainFile ../rust-toolchain.toml)
   ];
 
   # Sets environment variables in the workspace
