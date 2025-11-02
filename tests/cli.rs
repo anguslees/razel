@@ -1,10 +1,9 @@
-use assert_cmd::prelude::*; // Add methods on commands
+use assert_cmd::Command;
 use predicates::prelude::*; // Used for writing assertions
-use std::process::Command;
 
 #[test]
 fn test_razel_version() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("razel")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
 
     cmd.arg("version");
     cmd.assert()
@@ -16,7 +15,7 @@ fn test_razel_version() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_razel_version_flag() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("razel")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
 
     cmd.arg("--version");
     cmd.assert()
