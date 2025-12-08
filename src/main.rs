@@ -55,7 +55,11 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Configuration::new());
 
     fastrace::set_reporter(ConsoleReporter, fastrace::collector::Config::default());
+
+    let console_layer = console_subscriber::spawn();
+
     tracing_subscriber::registry()
+        .with(console_layer)
         .with(IndicatifLayer::new())
         .init();
 
