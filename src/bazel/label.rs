@@ -263,11 +263,14 @@ impl<S: AsRef<str>, R: fmt::Display + AsRef<str>> fmt::Display for Label<S, R> {
         if self.package.as_ref() == "" && self.target.as_ref() == self.repo_name() {
             return write!(f, "{}//", self.repo);
         }
-        if let Some((_, last)) = self.package.as_ref().rsplit_once('/') {
-            if last == self.target.as_ref() {
-                return write!(f, "{}//{}", self.repo, self.package.as_ref());
-            }
+
+        let pkg_str = self.package.as_ref();
+        let last_pkg_segment = pkg_str.rsplit_once('/').map(|(_, last)| last).unwrap_or(pkg_str);
+
+        if !pkg_str.is_empty() && last_pkg_segment == self.target.as_ref() {
+            return write!(f, "{}//{}", self.repo, self.package.as_ref());
         }
+
         write!(
             f,
             "{}//{}:{}",
