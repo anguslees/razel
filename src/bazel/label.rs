@@ -181,9 +181,9 @@ impl<S, R> Label<S, R> {
     /// Creates a new `Label`.
     pub const fn new(repo: R, package: S, target: S) -> Self {
         Self {
-            repo: repo,
-            package: package,
-            target: target,
+            repo,
+            package,
+            target,
         }
     }
 }
