@@ -1,4 +1,6 @@
 pub(crate) mod bzlmod;
+pub(crate) mod label;
+pub(crate) mod package;
 pub(crate) mod repo;
 
 #[derive(Debug)]

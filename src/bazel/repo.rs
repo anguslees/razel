@@ -1,46 +1,100 @@
-use tokio::io;
+use crate::bazel::package::{Digest, DigestFunction, File, FileStore, Package};
+use std::collections::HashMap;
 
-pub type Digest = bazel_remote_apis::build::bazel::remote::execution::v2::Digest;
-pub type DigestFunction =
-    bazel_remote_apis::build::bazel::remote::execution::v2::digest_function::Value;
-
-#[allow(dead_code)]
-pub trait File {
-    type AsyncRead: io::AsyncRead;
-
-    /// Get the file contents as an async reader.
-    async fn open(&self) -> Result<Self::AsyncRead, std::io::Error>;
-
-    /// Get the file digest.
-    async fn digest(&self, digest_function: DigestFunction) -> Result<Digest, std::io::Error>;
+pub struct Repository<F: FileStore> {
+    repo_name: String,
+    canonical_name: String,
+    repositories: HashMap<String, String>,
+    files: F,
 }
 
-#[allow(dead_code)]
-pub trait Repository {
-    type File: File;
+impl<F: FileStore + Clone> Repository<F> {
+    pub fn new(repo_name: String, canonical_name: String, files: F) -> Self {
+        Self {
+            repo_name,
+            canonical_name,
+            repositories: HashMap::new(),
+            files,
+        }
+    }
 
-    /// Read a file from the repository.
-    ///
-    /// The path is relative to the repository root.
-    async fn read_file(&self, path: &str) -> Result<Self::File, std::io::Error>;
+    pub fn canonical_name(&self) -> &str {
+        &self.canonical_name
+    }
 
-    /// Read a directory within the repository.
-    ///
-    /// The path is relative to the repository root.
-    async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error>;
+    pub fn add_repository(&mut self, name: String, canonical_name: String) {
+        self.repositories.insert(name, canonical_name);
+    }
+
+    pub async fn read_package(&self, pkg: &str) -> Result<Package<F>, std::io::Error> {
+        // Bazel looks for BUILD.bazel first, then BUILD. It's an error if both exist.
+        // We read both in parallel to maximize performance.
+        let build_bazel_path = format!("{}/BUILD.bazel", pkg);
+        let build_path = format!("{}/BUILD", pkg);
+
+        let (build_bazel_result, build_result) = tokio::join!(
+            self.read_file(&build_bazel_path),
+            self.read_file(&build_path)
+        );
+
+        match (build_bazel_result, build_result) {
+            // Success case 1: BUILD.bazel exists, BUILD does not.
+            (Ok(file), Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Package::new(self.files.clone(), file))
+            }
+            // Success case 2: BUILD.bazel does not exist, BUILD does.
+            (Err(e), Ok(file)) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Package::new(self.files.clone(), file))
+            }
+            // Error case 1: Both exist.
+            (Ok(_), Ok(_)) => Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "Package '{}' contains both BUILD and BUILD.bazel files.",
+                    pkg
+                ),
+            )),
+            // Error case 2: Neither exists.
+            (Err(e1), Err(e2))
+                if e1.kind() == std::io::ErrorKind::NotFound
+                    && e2.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "Package '{}' not found: missing BUILD or BUILD.bazel file.",
+                        pkg
+                    ),
+                ))
+            }
+            // Propagate other errors. If BUILD.bazel read had an error, propagate it first.
+            (Err(e), _) => Err(e),
+            // Otherwise, propagate the error from reading BUILD.
+            (_, Err(e)) => Err(e),
+        }
+    }
+
+    pub async fn read_file(&self, path: &str) -> Result<F::File, std::io::Error> {
+        self.files.read_file(path).await
+    }
+
+    pub async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error> {
+        self.files.read_dir(path).await
+    }
 }
 
-pub struct TokioFile {
+#[derive(Debug)]
+pub struct LocalFile {
     path: std::path::PathBuf,
 }
 
-impl TokioFile {
+impl LocalFile {
     pub fn new(path: std::path::PathBuf) -> Self {
         Self { path }
     }
 }
 
-impl File for TokioFile {
+impl File for LocalFile {
     type AsyncRead = tokio::fs::File;
 
     async fn open(&self) -> Result<Self::AsyncRead, std::io::Error> {
@@ -56,23 +110,23 @@ impl File for TokioFile {
     }
 }
 
-pub struct TokioRepository {
+pub struct LocalFileStore {
     root: std::path::PathBuf,
 }
 
-impl TokioRepository {
+impl LocalFileStore {
     #[allow(dead_code)]
     pub fn new(root: std::path::PathBuf) -> Self {
         Self { root }
     }
 }
 
-impl Repository for TokioRepository {
-    type File = TokioFile;
+impl FileStore for LocalFileStore {
+    type File = LocalFile;
 
     async fn read_file(&self, path: &str) -> Result<Self::File, std::io::Error> {
         let full_path = self.root.join(path);
-        Ok(TokioFile::new(full_path))
+        Ok(LocalFile::new(full_path))
     }
 
     async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error> {
@@ -121,18 +175,18 @@ pub mod test {
         }
     }
 
-    pub struct InMemoryRepository {
+    pub struct InMemoryFileStore {
         files: HashMap<String, Vec<u8>>,
     }
 
-    impl InMemoryRepository {
+    impl InMemoryFileStore {
         #[allow(dead_code)]
         pub fn new(files: HashMap<String, Vec<u8>>) -> Self {
             Self { files }
         }
     }
 
-    impl Repository for InMemoryRepository {
+    impl FileStore for InMemoryFileStore {
         type File = InMemoryFile;
 
         async fn read_file(&self, path: &str) -> Result<Self::File, std::io::Error> {
