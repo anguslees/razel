@@ -217,23 +217,21 @@ impl<S> ApparentLabel<S> {
 impl<S> Label<S, Repo<S>> {
     /// Converts this apparent label to a canonical label, given a repo mapping.
     ///
-    /// ```
-    /// use crate::bazel::label::ApparentLabel;
+    /// use crate::bazel::label::{parse_label, Label, Repo, CanonicalRepo, MAIN_REPO_ROOT};
     /// use std::collections::HashMap;
     ///
     /// let mut repo_mapping = HashMap::new();
     /// repo_mapping.insert("my_repo", "my_repo_canon");
     ///
-    /// let label: Label = "@my_repo//my/package:my_target".parse();
+    /// let label: Label<_, Repo<_>> = parse_label("@my_repo//my/package:my_target", &MAIN_REPO_ROOT).unwrap();
     ///
-    /// let canonical_label = label.to_canonical(|l| repo_mapping.get(l)).unwrap();
+    /// let canonical_label = label.to_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
     /// assert_eq!(canonical_label.to_string(), "@@my_repo_canon//my/package:my_target");
     ///
-    /// let label2: Label = "@@canon_repo//my/package:my_target".parse();
+    /// let label2: Label<_, Repo<_>> = parse_label("@@canon_repo//my/package:my_target", &MAIN_REPO_ROOT).unwrap();
     ///
-    /// let canonical_label = label.to_canonical(|l| repo_mapping.get(l)).unwrap();
-    /// assert_eq!(canonical_label.to_string(), "@@canon_repo//my/package:my_target");
-    /// ```
+    /// let canonical_label2 = label2.to_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
+    /// assert_eq!(canonical_label2.to_string(), "@@canon_repo//my/package:my_target");
     pub fn to_canonical<F>(self, func: F) -> Option<CanonicalLabel<S>>
     where
         F: FnOnce(&ApparentRepo<S>) -> Option<CanonicalRepo<S>>,
