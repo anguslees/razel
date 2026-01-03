@@ -1,3 +1,5 @@
+#![allow(dead_code, unused)]
+
 use tokio::io;
 
 pub use bazel_remote_apis::build::bazel::remote::execution::v2::Digest;

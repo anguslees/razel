@@ -1,5 +1,7 @@
 // src/bazel/label.rs
 
+#![allow(dead_code, unused)]
+
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

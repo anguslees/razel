@@ -1,3 +1,5 @@
+#![allow(dead_code, unused)]
+
 use crate::bazel::package::{Digest, DigestFunction, File, FileStore, Package};
 use std::collections::HashMap;
 
