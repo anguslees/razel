@@ -29,8 +29,8 @@ impl<F: FileStore + Clone> Repository<F> {
     pub async fn read_package(&self, pkg: &str) -> Result<Package<F>, std::io::Error> {
         // Bazel looks for BUILD.bazel first, then BUILD. It's an error if both exist.
         // We read both in parallel to maximize performance.
-        let build_bazel_path = format!("{}/BUILD.bazel", pkg);
-        let build_path = format!("{}/BUILD", pkg);
+        let build_bazel_path = format!("{pkg}/BUILD.bazel");
+        let build_path = format!("{pkg}/BUILD");
 
         let (build_bazel_result, build_result) = tokio::join!(
             self.read_file(&build_bazel_path),
@@ -49,10 +49,7 @@ impl<F: FileStore + Clone> Repository<F> {
             // Error case 1: Both exist.
             (Ok(_), Ok(_)) => Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                format!(
-                    "Package '{}' contains both BUILD and BUILD.bazel files.",
-                    pkg
-                ),
+                format!("Package '{pkg}' contains both BUILD and BUILD.bazel files."),
             )),
             // Error case 2: Neither exists.
             (Err(e1), Err(e2))
@@ -61,10 +58,7 @@ impl<F: FileStore + Clone> Repository<F> {
             {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!(
-                        "Package '{}' not found: missing BUILD or BUILD.bazel file.",
-                        pkg
-                    ),
+                    format!("Package '{pkg}' not found: missing BUILD or BUILD.bazel file."),
                 ))
             }
             // Propagate other errors. If BUILD.bazel read had an error, propagate it first.

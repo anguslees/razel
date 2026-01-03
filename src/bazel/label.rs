@@ -200,10 +200,10 @@ impl<S> ApparentLabel<S> {
     ///
     /// let apparent_label = ApparentLabel::new(ApparentRepo::new("my_repo"), "my/package", "my_target");
     ///
-    /// let canonical_label = apparent_label.to_canonical(|l| repo_mapping.get(l.as_str()).map(|&s| CanonicalRepo::new(s))).unwrap();
+    /// let canonical_label = apparent_label.into_canonical(|l| repo_mapping.get(l.as_str()).map(|&s| CanonicalRepo::new(s))).unwrap();
     /// assert_eq!(canonical_label.to_string(), "@@my_repo_canon//my/package:my_target");
     /// ```
-    pub fn to_canonical<F, T>(self, func: F) -> Option<CanonicalLabel<T>>
+    pub fn into_canonical<F, T>(self, func: F) -> Option<CanonicalLabel<T>>
     where
         F: FnOnce(&ApparentRepo<S>) -> Option<CanonicalRepo<T>>,
         T: From<S>,
@@ -228,15 +228,15 @@ impl<S> Label<S, Repo<S>> {
     ///
     /// let label: Label<_, Repo<_>> = parse_label("@my_repo//my/package:my_target", &MAIN_REPO_ROOT).unwrap();
     ///
-    /// let canonical_label = label.to_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
+    /// let canonical_label = label.into_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
     /// assert_eq!(canonical_label.to_string(), "@@my_repo_canon//my/package:my_target");
     ///
     /// let label2: Label<_, Repo<_>> = parse_label("@@canon_repo//my/package:my_target", &MAIN_REPO_ROOT).unwrap();
     ///
-    /// let canonical_label2 = label2.to_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
+    /// let canonical_label2 = label2.into_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
     /// assert_eq!(canonical_label2.to_string(), "@@canon_repo//my/package:my_target");
     /// ```
-    pub fn to_canonical<F>(self, func: F) -> Option<CanonicalLabel<S>>
+    pub fn into_canonical<F>(self, func: F) -> Option<CanonicalLabel<S>>
     where
         F: FnOnce(&ApparentRepo<S>) -> Option<CanonicalRepo<S>>,
     {
@@ -245,7 +245,7 @@ impl<S> Label<S, Repo<S>> {
             Repo::Canonical(r) => Some(r),
         }
         .map(|repo| CanonicalLabel {
-            repo: repo,
+            repo,
             package: self.package,
             target: self.target,
         })
@@ -427,12 +427,12 @@ fn parser<'a>()
     ));
 
     (repo.or_not())
-        .then(just("//").ignore_then(package).map(Some))
+        .then(just("//").ignore_then(package).map(Some::<&str>))
         .then((just(':').ignore_then(target)).or_not())
         .map(
-            |((r, p), t): ((Option<Repo<&str>>, Option<&str>), Option<&str>)| match ((r, p), t) {
+            |((r, p), t)| match ((r, p), t) {
                 // Expand shorthand: @repo// -> @repo//:repo
-                ((Some(repo), Some(pkg)), None) if pkg == "" => {
+                ((Some(repo), Some(pkg)), None) if pkg.is_empty() => {
                     ((Some(repo.clone()), Some(pkg)), Some(repo.into_name()))
                 }
                 // Expand shorthand: @repo//my/pkg -> @repo//my/pkg:pkg
@@ -638,13 +638,13 @@ mod tests {
     }
 
     #[test]
-    fn test_to_canonical() {
+    fn test_into_canonical() {
         let mut repo_mapping = HashMap::new();
         repo_mapping.insert("my_repo", "my_repo_canon_v1");
 
         let label = ApparentLabel::new(ApparentRepo::new("my_repo"), "my/pkg", "foo");
         let canonical_label =
-            label.to_canonical(|l| repo_mapping.get(l.as_str()).map(|&s| CanonicalRepo::new(s)));
+            label.into_canonical(|l| repo_mapping.get(l.as_str()).map(|&s| CanonicalRepo::new(s)));
 
         assert_eq!(
             canonical_label,
@@ -657,7 +657,7 @@ mod tests {
 
         let label = ApparentLabel::new(ApparentRepo::new("other_repo"), "my/pkg", "foo");
         let unknown_label =
-            label.to_canonical(|l| repo_mapping.get(l.as_str()).map(|&s| CanonicalRepo::new(s)));
+            label.into_canonical(|l| repo_mapping.get(l.as_str()).map(|&s| CanonicalRepo::new(s)));
 
         assert_eq!(unknown_label, None);
     }
