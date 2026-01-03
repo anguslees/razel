@@ -852,14 +852,14 @@ mod tests {
     #[test]
     fn test_debug_apparent_repo() {
         let label = Label::new(ApparentRepo::new("my_repo"), "my/pkg", "foo");
-        assert_eq!(format!("{:?}", label), "Label(\"@my_repo//my/pkg:foo\")");
+        assert_eq!(format!("{label:?}"), "Label(\"@my_repo//my/pkg:foo\")");
     }
 
     #[test]
     fn test_debug_canonical_repo() {
         let label = Label::new(CanonicalRepo::new("my_repo_canon"), "my/pkg", "foo");
         assert_eq!(
-            format!("{:?}", label),
+            format!("{label:?}"),
             "Label(\"@@my_repo_canon//my/pkg:foo\")"
         );
     }
