@@ -429,20 +429,18 @@ fn parser<'a>()
     (repo.or_not())
         .then(just("//").ignore_then(package).map(Some::<&str>))
         .then((just(':').ignore_then(target)).or_not())
-        .map(
-            |((r, p), t)| match ((r, p), t) {
-                // Expand shorthand: @repo// -> @repo//:repo
-                ((Some(repo), Some(pkg)), None) if pkg.is_empty() => {
-                    ((Some(repo.clone()), Some(pkg)), Some(repo.into_name()))
-                }
-                // Expand shorthand: @repo//my/pkg -> @repo//my/pkg:pkg
-                ((r, Some(pkg)), None) => {
-                    let tgt = pkg.rsplit_once('/').map(|(_, tgt)| tgt).unwrap_or(pkg);
-                    ((r, Some(pkg)), Some(tgt))
-                }
-                v => v,
-            },
-        )
+        .map(|((r, p), t)| match ((r, p), t) {
+            // Expand shorthand: @repo// -> @repo//:repo
+            ((Some(repo), Some(pkg)), None) if pkg.is_empty() => {
+                ((Some(repo.clone()), Some(pkg)), Some(repo.into_name()))
+            }
+            // Expand shorthand: @repo//my/pkg -> @repo//my/pkg:pkg
+            ((r, Some(pkg)), None) => {
+                let tgt = pkg.rsplit_once('/').map(|(_, tgt)| tgt).unwrap_or(pkg);
+                ((r, Some(pkg)), Some(tgt))
+            }
+            v => v,
+        })
         .validate(|((r, p), t), e, emitter| {
             if r.is_none() && p.is_none() && t.is_none() {
                 emitter.emit(Rich::custom(e.span(), "invalid label"));
