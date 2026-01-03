@@ -193,15 +193,54 @@ pub mod test {
         }
 
         async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error> {
-            let mut results = Vec::new();
-            for file_path in self.files.keys() {
-                if let Some(entry) = file_path.strip_prefix(path) {
-                    if let Some(part) = entry.split('/').next() {
-                        results.push(part.to_string());
+            let mut results = std::collections::HashSet::new();
+            let dir_path = std::path::Path::new(path);
+            for file_path_str in self.files.keys() {
+                let file_path = std::path::Path::new(file_path_str);
+                if let Ok(relative_path) = file_path.strip_prefix(dir_path) {
+                    if let Some(first_component) = relative_path.components().next() {
+                        if let std::path::Component::Normal(name) = first_component {
+                            results.insert(name.to_string_lossy().into_owned());
+                        }
                     }
                 }
             }
-            Ok(results)
+            Ok(results.into_iter().collect())
         }
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_file_store_read_dir() {
+        let mut files = HashMap::new();
+        files.insert("a/b".to_string(), vec![]);
+        files.insert("a/c".to_string(), vec![]);
+        files.insert("a/d/e".to_string(), vec![]);
+        files.insert("f".to_string(), vec![]);
+
+        let store = InMemoryFileStore::new(files);
+
+        // Test root directory
+        let mut root_entries = store.read_dir("").await.unwrap();
+        root_entries.sort();
+        assert_eq!(root_entries, vec!["a", "f"]);
+
+        // Test subdirectory "a"
+        let mut a_entries = store.read_dir("a").await.unwrap();
+        a_entries.sort();
+        assert_eq!(a_entries, vec!["b", "c", "d"]);
+
+        // Test subdirectory "a/" (with trailing slash)
+        let mut a_slash_entries = store.read_dir("a/").await.unwrap();
+        a_slash_entries.sort();
+        assert_eq!(a_slash_entries, vec!["b", "c", "d"]);
+
+        // Test deeper subdirectory "a/d"
+        let mut ad_entries = store.read_dir("a/d").await.unwrap();
+        ad_entries.sort();
+        assert_eq!(ad_entries, vec!["e"]);
+
+        // Test non-existent directory
+        let none_entries = store.read_dir("nonexistent").await.unwrap();
+        assert!(none_entries.is_empty());
     }
 }
