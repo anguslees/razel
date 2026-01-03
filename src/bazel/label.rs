@@ -265,7 +265,10 @@ impl<S: AsRef<str>, R: fmt::Display + AsRef<str>> fmt::Display for Label<S, R> {
         }
 
         let pkg_str = self.package.as_ref();
-        let last_pkg_segment = pkg_str.rsplit_once('/').map(|(_, last)| last).unwrap_or(pkg_str);
+        let last_pkg_segment = pkg_str
+            .rsplit_once('/')
+            .map(|(_, last)| last)
+            .unwrap_or(pkg_str);
 
         if !pkg_str.is_empty() && last_pkg_segment == self.target.as_ref() {
             return write!(f, "{}//{}", self.repo, self.package.as_ref());
@@ -506,6 +509,15 @@ mod tests {
     fn test_display_shorthand() {
         let label = ApparentLabel::new(ApparentRepo::new("my_repo"), "my/pkg", "pkg");
         assert_eq!(label.to_string(), "@my_repo//my/pkg");
+    }
+
+    #[test]
+    fn test_display_shorthand_single_segment_package() {
+        let label = ApparentLabel::new(ApparentRepo::new("my_repo"), "pkg", "pkg");
+        assert_eq!(label.to_string(), "@my_repo//pkg");
+
+        let label = CanonicalLabel::new(MAIN_REPO, "pkg", "pkg");
+        assert_eq!(label.to_string(), "@@//pkg");
     }
 
     #[test]
