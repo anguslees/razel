@@ -2,7 +2,6 @@
 
 use std::fmt;
 
-/// An empty string means the main repository.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ApparentRepo<S>(S);
 impl<S: AsRef<str>> ApparentRepo<S> {
@@ -33,6 +32,7 @@ impl<S: fmt::Display> fmt::Display for ApparentRepo<S> {
     }
 }
 
+/// An empty string means the main repository.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CanonicalRepo<S>(S);
 impl<S: AsRef<str>> CanonicalRepo<S> {
@@ -191,6 +191,7 @@ impl<S, R> Label<S, R> {
 impl<S> ApparentLabel<S> {
     /// Converts this apparent label to a canonical label, given a repo mapping.
     ///
+    /// ```
     /// use crate::bazel::label::{ApparentLabel, ApparentRepo, CanonicalRepo};
     /// use std::collections::HashMap;
     ///
@@ -201,6 +202,7 @@ impl<S> ApparentLabel<S> {
     ///
     /// let canonical_label = apparent_label.to_canonical(|l| repo_mapping.get(l.as_str()).map(|&s| CanonicalRepo::new(s))).unwrap();
     /// assert_eq!(canonical_label.to_string(), "@@my_repo_canon//my/package:my_target");
+    /// ```
     pub fn to_canonical<F, T>(self, func: F) -> Option<CanonicalLabel<T>>
     where
         F: FnOnce(&ApparentRepo<S>) -> Option<CanonicalRepo<T>>,
@@ -217,6 +219,7 @@ impl<S> ApparentLabel<S> {
 impl<S> Label<S, Repo<S>> {
     /// Converts this apparent label to a canonical label, given a repo mapping.
     ///
+    /// ```
     /// use crate::bazel::label::{parse_label, Label, Repo, CanonicalRepo, MAIN_REPO_ROOT};
     /// use std::collections::HashMap;
     ///
@@ -232,6 +235,7 @@ impl<S> Label<S, Repo<S>> {
     ///
     /// let canonical_label2 = label2.to_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
     /// assert_eq!(canonical_label2.to_string(), "@@canon_repo//my/package:my_target");
+    /// ```
     pub fn to_canonical<F>(self, func: F) -> Option<CanonicalLabel<S>>
     where
         F: FnOnce(&ApparentRepo<S>) -> Option<CanonicalRepo<S>>,
@@ -591,6 +595,17 @@ mod tests {
                 "my/pkg",
                 "foo"
             )
+        );
+    }
+
+    #[test]
+    fn test_parse_main_repo() {
+        let context = CanonicalLabel::new(CanonicalRepo::new("repo"), "a/pkg", "target");
+
+        let label = parse_label("@@//other/pkg:foo", &context).unwrap();
+        assert_eq!(
+            label,
+            Label::new(Repo::Canonical(MAIN_REPO), "other/pkg", "foo")
         );
     }
 
