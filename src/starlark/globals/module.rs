@@ -320,7 +320,7 @@ impl RepoExtra {
         eval.extra.unwrap().downcast_ref::<Self>().unwrap()
     }
 
-    fn builder<'a>(&'a self) -> MutexGuard<'a, RepoBuilder> {
+    fn builder(&self) -> MutexGuard<'_, RepoBuilder> {
         self.0.lock().unwrap()
     }
 }
