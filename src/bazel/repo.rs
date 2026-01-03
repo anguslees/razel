@@ -193,29 +193,35 @@ pub mod test {
         }
 
         async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error> {
-            let mut results = std::collections::HashSet::new();
             let dir_path = std::path::Path::new(path);
-            for file_path_str in self.files.keys() {
-                let file_path = std::path::Path::new(file_path_str);
-                if let Ok(relative_path) = file_path.strip_prefix(dir_path) {
-                    if let Some(first_component) = relative_path.components().next() {
-                        if let std::path::Component::Normal(name) = first_component {
-                            results.insert(name.to_string_lossy().into_owned());
-                        }
-                    }
-                }
-            }
+            let results: std::collections::HashSet<_> = self
+                .files
+                .keys()
+                .filter_map(|file_path_str| {
+                    std::path::Path::new(file_path_str)
+                        .strip_prefix(dir_path)
+                        .ok()
+                        .and_then(|p| p.components().next())
+                        .and_then(|c| match c {
+                            std::path::Component::Normal(name) => {
+                                Some(name.to_string_lossy().into_owned())
+                            }
+                            _ => None,
+                        })
+                })
+                .collect();
             Ok(results.into_iter().collect())
         }
     }
 
     #[tokio::test]
     async fn test_in_memory_file_store_read_dir() {
-        let mut files = HashMap::new();
-        files.insert("a/b".to_string(), vec![]);
-        files.insert("a/c".to_string(), vec![]);
-        files.insert("a/d/e".to_string(), vec![]);
-        files.insert("f".to_string(), vec![]);
+        let files = HashMap::from([
+            ("a/b".to_string(), vec![]),
+            ("a/c".to_string(), vec![]),
+            ("a/d/e".to_string(), vec![]),
+            ("f".to_string(), vec![]),
+        ]);
 
         let store = InMemoryFileStore::new(files);
 
@@ -224,15 +230,12 @@ pub mod test {
         root_entries.sort();
         assert_eq!(root_entries, vec!["a", "f"]);
 
-        // Test subdirectory "a"
-        let mut a_entries = store.read_dir("a").await.unwrap();
-        a_entries.sort();
-        assert_eq!(a_entries, vec!["b", "c", "d"]);
-
-        // Test subdirectory "a/" (with trailing slash)
-        let mut a_slash_entries = store.read_dir("a/").await.unwrap();
-        a_slash_entries.sort();
-        assert_eq!(a_slash_entries, vec!["b", "c", "d"]);
+        // Test subdirectory "a" (with and without trailing slash)
+        for path in ["a", "a/"] {
+            let mut entries = store.read_dir(path).await.unwrap();
+            entries.sort();
+            assert_eq!(entries, vec!["b", "c", "d"], "Failed for path: {path}");
+        }
 
         // Test deeper subdirectory "a/d"
         let mut ad_entries = store.read_dir("a/d").await.unwrap();
