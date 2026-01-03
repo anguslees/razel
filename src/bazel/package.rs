@@ -12,7 +12,10 @@ pub struct Package<F: FileStore> {
 
 impl<F: FileStore> Package<F> {
     pub fn new(filestore: F, build_file: F::File) -> Self {
-        Self { _build_file: build_file, _filestore: filestore }
+        Self {
+            _build_file: build_file,
+            _filestore: filestore,
+        }
     }
 
     pub fn sub_packages(&self) -> Vec<String> {
