@@ -20,7 +20,7 @@ derive_more = { version = "2.0.0", features = ["display"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1.0"
 erased-serde = "0.4"
-bazel-remote-apis = "0.23.0"
+bazel-remote-apis = "0.24.0"
 async-recursion = "1.1.1"
 futures = "0.3.31"
 tracing-indicatif = "0.3"
