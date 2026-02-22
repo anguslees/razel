@@ -2,13 +2,14 @@
 
 #![allow(dead_code, unused)]
 
-use std::fmt;
+use std::{borrow::Cow, fmt, ops::Deref};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ApparentRepo<S>(S);
-impl<S: AsRef<str>> ApparentRepo<S> {
-    pub const fn new(name: S) -> Self {
-        Self(name)
+pub struct ApparentRepo<'a>(Cow<'a, str>);
+
+impl<'a> ApparentRepo<'a> {
+    pub fn new(name: impl Into<Cow<'a, str>>) -> Self {
+        Self(name.into())
     }
 
     pub fn as_str(&self) -> &str {
@@ -16,19 +17,19 @@ impl<S: AsRef<str>> ApparentRepo<S> {
     }
 }
 
-impl<S> ApparentRepo<S> {
-    pub fn into_name(self) -> S {
+impl<'a> ApparentRepo<'a> {
+    pub fn into_name(self) -> Cow<'a, str> {
         self.0
     }
 }
 
-impl<S: AsRef<str>> AsRef<str> for ApparentRepo<S> {
+impl<'a> AsRef<str> for ApparentRepo<'a> {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-impl<S: fmt::Display> fmt::Display for ApparentRepo<S> {
+impl<'a> fmt::Display for ApparentRepo<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "@{}", self.0)
     }
@@ -36,10 +37,11 @@ impl<S: fmt::Display> fmt::Display for ApparentRepo<S> {
 
 /// An empty string means the main repository.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CanonicalRepo<S>(S);
-impl<S: AsRef<str>> CanonicalRepo<S> {
-    pub const fn new(name: S) -> Self {
-        Self(name)
+pub struct CanonicalRepo<'a>(Cow<'a, str>);
+
+impl<'a> CanonicalRepo<'a> {
+    pub fn new(name: impl Into<Cow<'a, str>>) -> Self {
+        Self(name.into())
     }
 
     pub fn as_str(&self) -> &str {
@@ -47,32 +49,32 @@ impl<S: AsRef<str>> CanonicalRepo<S> {
     }
 }
 
-impl<S> CanonicalRepo<S> {
-    pub fn into_name(self) -> S {
+impl<'a> CanonicalRepo<'a> {
+    pub fn into_name(self) -> Cow<'a, str> {
         self.0
     }
 }
 
-impl<S: AsRef<str>> AsRef<str> for CanonicalRepo<S> {
+impl<'a> AsRef<str> for CanonicalRepo<'a> {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-impl<S: fmt::Display> fmt::Display for CanonicalRepo<S> {
+impl<'a> fmt::Display for CanonicalRepo<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "@@{}", self.0)
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Repo<S> {
-    Apparent(ApparentRepo<S>),
-    Canonical(CanonicalRepo<S>),
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Repo<'a> {
+    Apparent(ApparentRepo<'a>),
+    Canonical(CanonicalRepo<'a>),
 }
 
-impl<S> Repo<S> {
-    pub fn into_name(self) -> S {
+impl<'a> Repo<'a> {
+    pub fn into_name(self) -> Cow<'a, str> {
         match self {
             Repo::Apparent(r) => r.into_name(),
             Repo::Canonical(r) => r.into_name(),
@@ -80,7 +82,7 @@ impl<S> Repo<S> {
     }
 }
 
-impl<S: fmt::Display> fmt::Display for Repo<S> {
+impl<'a> fmt::Display for Repo<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Repo::Apparent(r) => r.fmt(f),
@@ -89,25 +91,7 @@ impl<S: fmt::Display> fmt::Display for Repo<S> {
     }
 }
 
-impl<S, T> PartialEq<Repo<T>> for Repo<S>
-where
-    S: PartialEq<T>,
-{
-    fn eq(&self, other: &Repo<T>) -> bool {
-        match (self, other) {
-            (Repo::Apparent(ApparentRepo(l)), Repo::Apparent(ApparentRepo(r))) => l == r,
-            (Repo::Canonical(CanonicalRepo(l)), Repo::Canonical(CanonicalRepo(r))) => l == r,
-            _ => false,
-        }
-    }
-}
-
-impl<S> Eq for Repo<S> where S: Eq {}
-
-impl<S> AsRef<str> for Repo<S>
-where
-    S: AsRef<str>,
-{
+impl<'a> AsRef<str> for Repo<'a> {
     fn as_ref(&self) -> &str {
         match self {
             Repo::Apparent(r) => r.as_ref(),
@@ -116,14 +100,14 @@ where
     }
 }
 
-impl<S> From<CanonicalRepo<S>> for Repo<S> {
-    fn from(r: CanonicalRepo<S>) -> Self {
+impl<'a> From<CanonicalRepo<'a>> for Repo<'a> {
+    fn from(r: CanonicalRepo<'a>) -> Self {
         Repo::Canonical(r)
     }
 }
 
-impl<S> From<ApparentRepo<S>> for Repo<S> {
-    fn from(r: ApparentRepo<S>) -> Self {
+impl<'a> From<ApparentRepo<'a>> for Repo<'a> {
+    fn from(r: ApparentRepo<'a>) -> Self {
         Repo::Apparent(r)
     }
 }
@@ -136,13 +120,13 @@ impl<S> From<ApparentRepo<S>> for Repo<S> {
 ///
 /// See https://bazel.build/concepts/labels
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Label<S, R = Repo<S>> {
+pub struct Label<'a, R = Repo<'a>> {
     /// The repository name, e.g., `my_repo`.
     pub repo: R,
     /// The package path, e.g., `my/package`.
-    pub package: S,
+    pub package: Cow<'a, str>,
     /// The target name, e.g., `my_target`.
-    pub target: S,
+    pub target: Cow<'a, str>,
 }
 
 /// A Bazel label, identifying a canonical repo target.
@@ -152,7 +136,7 @@ pub struct Label<S, R = Repo<S>> {
 /// `@@[repo_name]//[package_path]:[target_name]`
 ///
 /// See https://bazel.build/concepts/labels
-pub type CanonicalLabel<S> = Label<S, CanonicalRepo<S>>;
+pub type CanonicalLabel<'a> = Label<'a, CanonicalRepo<'a>>;
 
 /// A Bazel label, identifying an apparent repo target.
 ///
@@ -161,7 +145,7 @@ pub type CanonicalLabel<S> = Label<S, CanonicalRepo<S>>;
 /// `@[repo_name]//[package_path]:[target_name]`
 ///
 /// See https://bazel.build/concepts/labels
-pub type ApparentLabel<S> = Label<S, ApparentRepo<S>>;
+pub type ApparentLabel<'a> = Label<'a, ApparentRepo<'a>>;
 
 /// The well-known 'main' repo representing the main workspace.
 /// ```
@@ -169,7 +153,7 @@ pub type ApparentLabel<S> = Label<S, ApparentRepo<S>>;
 ///
 /// assert_eq!(MAIN_REPO.to_string(), "@@");
 /// ```
-pub const MAIN_REPO: CanonicalRepo<&'static str> = CanonicalRepo::new("");
+pub const MAIN_REPO: CanonicalRepo<'static> = CanonicalRepo(Cow::Borrowed(""));
 
 /// A label representing the well-known 'main' repo root.  This is the workspace root.
 /// ```
@@ -177,24 +161,29 @@ pub const MAIN_REPO: CanonicalRepo<&'static str> = CanonicalRepo::new("");
 ///
 /// assert_eq!(MAIN_REPO_ROOT.to_string(), "@@//");
 /// ```
-pub const MAIN_REPO_ROOT: CanonicalLabel<&'static str> = CanonicalLabel::new(MAIN_REPO, "", "");
+pub const MAIN_REPO_ROOT: CanonicalLabel<'static> = CanonicalLabel {
+    repo: MAIN_REPO,
+    package: Cow::Borrowed(""),
+    target: Cow::Borrowed(""),
+};
 
-impl<S, R> Label<S, R> {
+impl<'a, R> Label<'a, R> {
     /// Creates a new `Label`.
-    pub const fn new(repo: R, package: S, target: S) -> Self {
+    pub fn new(repo: R, package: impl Into<Cow<'a, str>>, target: impl Into<Cow<'a, str>>) -> Self {
         Self {
             repo,
-            package,
-            target,
+            package: package.into(),
+            target: target.into(),
         }
     }
 }
 
-impl<S> ApparentLabel<S> {
+impl<'a> ApparentLabel<'a> {
     /// Converts this apparent label to a canonical label, given a repo mapping.
     ///
     /// ```
     /// use crate::bazel::label::{ApparentLabel, ApparentRepo, CanonicalRepo};
+    /// use std::borrow::Cow;
     /// use std::collections::HashMap;
     ///
     /// let mut repo_mapping = HashMap::new();
@@ -205,20 +194,19 @@ impl<S> ApparentLabel<S> {
     /// let canonical_label = apparent_label.into_canonical(|l| repo_mapping.get(l.as_str()).map(|&s| CanonicalRepo::new(s))).unwrap();
     /// assert_eq!(canonical_label.to_string(), "@@my_repo_canon//my/package:my_target");
     /// ```
-    pub fn into_canonical<F, T>(self, func: F) -> Option<CanonicalLabel<T>>
+    pub fn into_canonical<F>(self, func: F) -> Option<CanonicalLabel<'a>>
     where
-        F: FnOnce(&ApparentRepo<S>) -> Option<CanonicalRepo<T>>,
-        T: From<S>,
+        F: FnOnce(&ApparentRepo<'a>) -> Option<CanonicalRepo<'a>>,
     {
         func(&self.repo).map(|canonical_name| CanonicalLabel {
             repo: canonical_name,
-            package: self.package.into(),
-            target: self.target.into(),
+            package: self.package,
+            target: self.target,
         })
     }
 }
 
-impl<S> Label<S, Repo<S>> {
+impl<'a> Label<'a, Repo<'a>> {
     /// Converts this apparent label to a canonical label, given a repo mapping.
     ///
     /// ```
@@ -228,19 +216,19 @@ impl<S> Label<S, Repo<S>> {
     /// let mut repo_mapping = HashMap::new();
     /// repo_mapping.insert("my_repo", "my_repo_canon");
     ///
-    /// let label: Label<_, Repo<_>> = parse_label("@my_repo//my/package:my_target", &MAIN_REPO_ROOT).unwrap();
+    /// let label = parse_label("@my_repo//my/package:my_target", &MAIN_REPO_ROOT).unwrap();
     ///
     /// let canonical_label = label.into_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
     /// assert_eq!(canonical_label.to_string(), "@@my_repo_canon//my/package:my_target");
     ///
-    /// let label2: Label<_, Repo<_>> = parse_label("@@canon_repo//my/package:my_target", &MAIN_REPO_ROOT).unwrap();
+    /// let label2 = parse_label("@@canon_repo//my/package:my_target", &MAIN_REPO_ROOT).unwrap();
     ///
     /// let canonical_label2 = label2.into_canonical(|l| repo_mapping.get(l.as_str()).map(|s| CanonicalRepo::new(*s))).unwrap();
     /// assert_eq!(canonical_label2.to_string(), "@@canon_repo//my/package:my_target");
     /// ```
-    pub fn into_canonical<F>(self, func: F) -> Option<CanonicalLabel<S>>
+    pub fn into_canonical<F>(self, func: F) -> Option<CanonicalLabel<'a>>
     where
-        F: FnOnce(&ApparentRepo<S>) -> Option<CanonicalRepo<S>>,
+        F: FnOnce(&ApparentRepo<'a>) -> Option<CanonicalRepo<'a>>,
     {
         match self.repo {
             Repo::Apparent(r) => func(&r),
@@ -254,7 +242,7 @@ impl<S> Label<S, Repo<S>> {
     }
 }
 
-impl<S: fmt::Display, R: fmt::Display> fmt::Debug for Label<S, R> {
+impl<'a, R: fmt::Display> fmt::Debug for Label<'a, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -264,33 +252,27 @@ impl<S: fmt::Display, R: fmt::Display> fmt::Debug for Label<S, R> {
     }
 }
 
-impl<S: AsRef<str>, R: fmt::Display + AsRef<str>> fmt::Display for Label<S, R> {
+impl<'a, R: fmt::Display + AsRef<str>> fmt::Display for Label<'a, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.package.as_ref() == "" && self.target.as_ref() == self.repo_name() {
+        if self.package.is_empty() && self.target == self.repo_name() {
             return write!(f, "{}//", self.repo);
         }
 
-        let pkg_str = self.package.as_ref();
+        let pkg_str = &self.package;
         let last_pkg_segment = pkg_str
             .rsplit_once('/')
             .map(|(_, last)| last)
             .unwrap_or(pkg_str);
 
-        if !pkg_str.is_empty() && last_pkg_segment == self.target.as_ref() {
-            return write!(f, "{}//{}", self.repo, self.package.as_ref());
+        if !pkg_str.is_empty() && last_pkg_segment == self.target {
+            return write!(f, "{}//{}", self.repo, self.package);
         }
 
-        write!(
-            f,
-            "{}//{}:{}",
-            self.repo,
-            self.package.as_ref(),
-            self.target.as_ref()
-        )
+        write!(f, "{}//{}:{}", self.repo, self.package, self.target)
     }
 }
 
-impl<S: AsRef<str>, R> Label<S, R> {
+impl<'a, R> Label<'a, R> {
     /// The name of the target. Corresponds to `Label.name` in Starlark.
     pub fn name(&self) -> &str {
         self.target.as_ref()
@@ -307,46 +289,46 @@ impl<S: AsRef<str>, R> Label<S, R> {
     }
 }
 
-impl<S, R> Label<S, R> {
+impl<'a, R> Label<'a, R> {
     /// Creates a new label in the same package as this label.
     /// Corresponds to `Label.same_package_label()` in Starlark.
-    pub fn same_package_label(&self, name: S) -> Label<S, R>
+    pub fn same_package_label(&self, name: impl Into<Cow<'a, str>>) -> Label<'a, R>
     where
         R: Clone,
-        S: Clone,
     {
         Label {
             repo: self.repo.clone(),
             package: self.package.clone(),
-            target: name,
+            target: name.into(),
         }
     }
 
     /// Resolves a relative label string.
     /// Corresponds to `Label.relative()` in Starlark.
-    pub fn relative<'a>(
-        &'a self,
-        rel_path: &'a str,
-    ) -> Result<Label<&'a str, Repo<&'a str>>, ParseError<'a>>
+    pub fn relative<'b>(&'b self, rel_path: &'b str) -> Result<Label<'b, Repo<'b>>, ParseError<'b>>
     where
-        R: Clone,
-        Repo<&'a str>: From<R>,
-        S: AsRef<str>,
+        R: Clone + Into<Repo<'b>>,
     {
         parse_label(rel_path, self)
     }
 }
 
-impl<S, R: AsRef<str>> Label<S, R> {
+impl<'a, R> Label<'a, R> {
     /// The name of the repository in which this target is defined.
     /// An alias for `repo()`.
-    pub fn repo_name(&self) -> &str {
+    pub fn repo_name(&self) -> &str
+    where
+        R: AsRef<str>,
+    {
         self.repo.as_ref()
     }
 
     /// The execution-time path of the workspace in which this target is defined.
     /// Corresponds to `Label.workspace_root` in Starlark.
-    pub fn workspace_root(&self) -> String {
+    pub fn workspace_root(&self) -> String
+    where
+        R: AsRef<str>,
+    {
         if self.repo.as_ref().is_empty() {
             "".to_string()
         } else {
@@ -357,18 +339,18 @@ impl<S, R: AsRef<str>> Label<S, R> {
 
 /// The pieces of a parsed label, used in intermediate calculations.
 #[derive(PartialEq, Debug)]
-struct RelativeLabel<S> {
-    repo: Option<Repo<S>>,
-    package: Option<S>,
-    target: Option<S>,
+struct RelativeLabel<'a> {
+    repo: Option<Repo<'a>>,
+    package: Option<Cow<'a, str>>,
+    target: Option<Cow<'a, str>>,
 }
 
 use chumsky::prelude::*;
 
 type ParseError<'a> = Rich<'a, char>;
 
-fn parser<'a>()
--> impl chumsky::Parser<'a, &'a str, RelativeLabel<&'a str>, extra::Err<ParseError<'a>>> {
+fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, RelativeLabel<'a>, extra::Err<ParseError<'a>>>
+{
     // See https://bazel.build/concepts/labels#labels-lexical-specification
 
     let alphanumeric = any()
@@ -420,11 +402,11 @@ fn parser<'a>()
     let repo = choice((
         just("@@")
             .ignore_then(repo_name)
-            .map(|s| Repo::Canonical(CanonicalRepo::new(s)))
+            .map(|s: &str| Repo::Canonical(CanonicalRepo::new(s)))
             .labelled("canonical repo"),
         just('@')
             .ignore_then(repo_name)
-            .map(|s| Repo::Apparent(ApparentRepo::new(s)))
+            .map(|s: &str| Repo::Apparent(ApparentRepo::new(s)))
             .labelled("apparent repo"),
     ));
 
@@ -434,14 +416,16 @@ fn parser<'a>()
         .map(|((r, p), t)| match ((r, p), t) {
             // Expand shorthand: @repo// -> @repo//:repo
             ((Some(repo), Some(pkg)), None) if pkg.is_empty() => {
-                ((Some(repo.clone()), Some(pkg)), Some(repo.into_name()))
+                let name = repo.clone().into_name();
+                ((Some(repo), Some(pkg)), Some(name))
             }
             // Expand shorthand: @repo//my/pkg -> @repo//my/pkg:pkg
             ((r, Some(pkg)), None) => {
                 let tgt = pkg.rsplit_once('/').map(|(_, tgt)| tgt).unwrap_or(pkg);
-                ((r, Some(pkg)), Some(tgt))
+                ((r, Some(pkg)), Some(Cow::Borrowed(tgt)))
             }
-            v => v,
+            ((r, p), Some(t)) => ((r, p), Some(Cow::Borrowed(t))),
+            ((r, p), None) => ((r, p), None),
         })
         .validate(|((r, p), t), e, emitter| {
             if r.is_none() && p.is_none() && t.is_none() {
@@ -452,24 +436,23 @@ fn parser<'a>()
         .or(just(':')
             .or_not()
             .ignore_then(target)
-            .map(|t| ((None, None), Some(t))))
+            .map(|t| ((None, None), Some(Cow::Borrowed(t)))))
         .labelled("label")
         .map(|((repo, package), target)| RelativeLabel {
             repo,
-            package,
+            package: package.map(Cow::Borrowed),
             target,
         })
 }
 
 /// Parses a label string.
 // TODO: Remove the `R: Clone` constraint
-pub fn parse_label<'a, S, R>(
+pub fn parse_label<'a, R>(
     s: &'a str,
-    context: &'a Label<S, R>,
-) -> Result<Label<&'a str, Repo<&'a str>>, ParseError<'a>>
+    context: &Label<'a, R>,
+) -> Result<Label<'a, Repo<'a>>, ParseError<'a>>
 where
-    R: Into<Repo<&'a str>> + Clone,
-    S: AsRef<str>,
+    R: Into<Repo<'a>> + Clone,
 {
     //log::debug!("Label parser grammar is {}", parser().debug().to_ebnf());
 
@@ -480,8 +463,8 @@ where
 
     Ok(Label::new(
         relative.repo.unwrap_or_else(|| context.repo.clone().into()),
-        relative.package.unwrap_or_else(|| context.package.as_ref()),
-        relative.target.unwrap_or_else(|| context.target.as_ref()),
+        relative.package.unwrap_or_else(|| context.package.clone()),
+        relative.target.unwrap_or_else(|| context.target.clone()),
     ))
 }
 
@@ -819,18 +802,18 @@ mod tests {
         prop::collection::vec(component, 1..5).prop_map(|parts| parts.join("/"))
     }
 
-    fn arb_repo() -> impl Strategy<Value = Repo<String>> {
+    fn arb_repo() -> impl Strategy<Value = Repo<'static>> {
         prop_oneof![
             arb_repo_name().prop_map(|v| Repo::Apparent(ApparentRepo::new(v))),
             arb_repo_name().prop_map(|v| Repo::Canonical(CanonicalRepo::new(v))),
         ]
     }
-    fn arb_label() -> impl Strategy<Value = Label<String>> {
+    fn arb_label() -> impl Strategy<Value = Label<'static>> {
         (arb_repo(), arb_package_name(), arb_target_name()).prop_map(|(repo, package, target)| {
             Label {
                 repo,
-                package,
-                target,
+                package: package.into(),
+                target: target.into(),
             }
         })
     }

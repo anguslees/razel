@@ -1,3 +1,5 @@
+use crate::bazel::bzlmod::BazelDep;
+use crate::bazel::package::BoxedFileStore;
 use allocative::Allocative;
 use derive_more::Display;
 use starlark::any::ProvidesStaticType;
@@ -9,7 +11,6 @@ use starlark::values::none::{NoneOr, NoneType};
 use starlark::values::tuple::UnpackTuple;
 use starlark::values::{NoSerialize, StarlarkValue, Value, starlark_value};
 use starlark::{starlark_module, starlark_simple_value};
-use std::cell::{RefCell, RefMut};
 use std::default::Default;
 use std::sync::{Mutex, MutexGuard};
 
@@ -27,22 +28,41 @@ starlark_simple_value!(RepoRuleProxy);
 #[starlark_value(type = "repo_rule_proxy")]
 impl<'v> StarlarkValue<'v> for RepoRuleProxy {}
 
-#[derive(Debug, Default)]
-pub(crate) struct ModuleBuilder {
+#[derive(Debug, Allocative)]
+pub(crate) struct ModuleBuilder<'a> {
     is_root_module: bool,
     ignore_dev_dependency: bool,
     pub(crate) name: Option<String>,
     pub(crate) version: Option<String>,
     pub(crate) repo_name: Option<String>,
-    pub(crate) bazel_deps: Vec<String>,
+    pub(crate) bazel_deps: Vec<BazelDep>,
     pub(crate) archive_overrides: Vec<String>,
     pub(crate) local_path_overrides: Vec<String>,
     pub(crate) git_overrides: Vec<String>,
     pub(crate) use_extensions: Vec<String>,
     pub(crate) includes: Vec<String>,
+    #[allocative(skip)]
+    pub(crate) files: BoxedFileStore<'a>,
 }
 
-impl ModuleBuilder {
+impl<'a> ModuleBuilder<'a> {
+    pub(crate) fn new(files: BoxedFileStore<'a>, is_root_module: bool) -> Self {
+        Self {
+            is_root_module,
+            ignore_dev_dependency: false,
+            name: None,
+            version: None,
+            repo_name: None,
+            bazel_deps: Vec::new(),
+            archive_overrides: Vec::new(),
+            local_path_overrides: Vec::new(),
+            git_overrides: Vec::new(),
+            use_extensions: Vec::new(),
+            includes: Vec::new(),
+            files,
+        }
+    }
+
     pub(crate) fn merge(&mut self, other: ModuleBuilder) {
         self.bazel_deps.extend(other.bazel_deps);
         self.archive_overrides.extend(other.archive_overrides);
@@ -53,38 +73,41 @@ impl ModuleBuilder {
     }
 }
 
-#[derive(Debug, ProvidesStaticType)]
-pub(crate) struct ModuleExtra(RefCell<ModuleBuilder>);
+#[derive(Debug, ProvidesStaticType, Allocative)]
+pub(crate) struct ModuleExtra(std::sync::Arc<std::sync::Mutex<ModuleBuilder<'static>>>);
 
 impl ModuleExtra {
-    pub fn new() -> Self {
-        Self(RefCell::new(ModuleBuilder::default()))
+    pub(crate) fn new(files: BoxedFileStore<'static>) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            ModuleBuilder::new(files, false),
+        )))
     }
 
-    pub fn new_root() -> Self {
-        let builder = ModuleBuilder {
-            is_root_module: true,
-            ..Default::default()
-        };
-        Self(RefCell::new(builder))
+    pub(crate) fn new_root(files: BoxedFileStore<'static>) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            ModuleBuilder::new(files, true),
+        )))
     }
 
     #[allow(dead_code)]
-    pub fn with_ignore_dev_dependency(mut self, ignore_dev_dependency: bool) -> Self {
-        self.0.get_mut().ignore_dev_dependency = ignore_dev_dependency;
+    pub fn with_ignore_dev_dependency(self, ignore_dev_dependency: bool) -> Self {
+        self.0.lock().unwrap().ignore_dev_dependency = ignore_dev_dependency;
         self
     }
 
-    fn from_eval<'a>(eval: &'a Evaluator) -> &'a Self {
+    fn from_eval<'b>(eval: &'b Evaluator) -> &'b Self {
         eval.extra.unwrap().downcast_ref::<Self>().unwrap()
     }
 
-    pub fn builder<'a>(&'a self) -> RefMut<'a, ModuleBuilder> {
-        self.0.borrow_mut()
+    pub fn builder<'b>(&'b self) -> std::sync::MutexGuard<'b, ModuleBuilder<'static>> {
+        self.0.lock().unwrap()
     }
 
-    pub fn into_inner(self) -> ModuleBuilder {
-        self.0.into_inner()
+    pub fn into_inner(self) -> ModuleBuilder<'static> {
+        std::sync::Arc::try_unwrap(self.0)
+            .unwrap()
+            .into_inner()
+            .unwrap()
     }
 }
 
@@ -118,7 +141,21 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
     ) -> starlark::Result<NoneType> {
         let mut bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module || (dev_dependency && !bzl_module.ignore_dev_dependency) {
-            todo!();
+            let repo_name = match repo_name {
+                NoneOr::None => name,
+                NoneOr::Other(s) => {
+                    if s.is_empty() {
+                        name
+                    } else {
+                        s
+                    }
+                }
+            };
+            bzl_module.bazel_deps.push(BazelDep {
+                name: name.to_string(),
+                version: version.to_string(),
+                repo_name: repo_name.to_string(),
+            });
         }
         Ok(NoneType)
     }
