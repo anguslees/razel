@@ -16,7 +16,7 @@ pub struct BazelDep {
     pub name: String,
     pub version: String,
     pub repo_name: String,
-    // TODO: max_compatibility_level, dev_dependency
+    pub dev_dependency: bool,
 }
 
 /// MODULE.bazel file

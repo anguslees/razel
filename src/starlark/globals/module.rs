@@ -155,6 +155,7 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
                 name: name.to_string(),
                 version: version.to_string(),
                 repo_name: repo_name.to_string(),
+                dev_dependency: dev_dependency,
             });
         }
         Ok(NoneType)
