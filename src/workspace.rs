@@ -1,15 +1,14 @@
-use futures::future::{BoxFuture, Shared};
-use futures::{FutureExt, TryFutureExt};
-use std::future::IntoFuture;
-
 use crate::bazel::label::{CanonicalRepo, MAIN_REPO};
 use crate::bazel::package::{BoxFileStore, DynFileStore};
 use crate::bazel::repo::{LocalFileStore, Repository};
+use crate::shared_error::SharedError;
+use futures::FutureExt;
+use futures::TryFutureExt;
+use futures::future::{BoxFuture, Shared, try_select};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::sync::{Arc, RwLock};
-
-use crate::shared_error::SharedError;
 
 type RepositoryFuture = Shared<BoxFuture<'static, Result<Arc<Repository<'static>>, SharedError>>>;
 
@@ -22,15 +21,22 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    // TODO: this should be async
-    pub fn new<P: AsRef<Path>>(start_dir: P) -> Result<Arc<Self>, std::io::Error> {
+    pub async fn new(start_dir: impl AsRef<Path>) -> Result<Arc<Self>, std::io::Error> {
         let mut current_dir = start_dir.as_ref().to_path_buf();
 
         loop {
             let module_bazel = current_dir.join("MODULE.bazel");
             let repo_bazel = current_dir.join("REPO.bazel");
 
-            if module_bazel.exists() || repo_bazel.exists() {
+            let exists = try_select(
+                pin!(tokio::fs::try_exists(module_bazel)),
+                pin!(tokio::fs::try_exists(repo_bazel)),
+            )
+            .await
+            .map(|x| x.factor_first().0)
+            .unwrap_or(false);
+
+            if exists {
                 break;
             }
 

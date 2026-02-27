@@ -10,7 +10,7 @@ pub async fn query<W>(out: &mut W, _config: Arc<Configuration>, query: &str) -> 
 where
     W: AsyncWrite + Unpin,
 {
-    let workspace = Workspace::new(".")?;
+    let workspace = Workspace::new(".").await?;
     println!("Workspace path: {:?}", workspace.path());
 
     let module = workspace.main_module().await?;
