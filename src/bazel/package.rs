@@ -32,7 +32,7 @@ use futures::future::{BoxFuture, FutureExt};
 
 pub type BoxAsyncRead = Box<dyn io::AsyncRead + Unpin + Send>;
 pub type BoxFile<'a> = Box<DynFile<'a, BoxAsyncRead>>;
-pub type BoxedFileStore<'a> = std::sync::Arc<DynFileStore<'a, BoxFile<'a>>>;
+pub type BoxFileStore<'a> = std::sync::Arc<DynFileStore<'a, BoxFile<'a>>>;
 
 #[dynosaur::dynosaur(pub DynFile = dyn(box) File)]
 pub trait File: Send + Sync + std::fmt::Debug {

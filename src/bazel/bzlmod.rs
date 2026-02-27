@@ -1,4 +1,4 @@
-use crate::bazel::package::{BoxedFileStore, File, FileStore};
+use crate::bazel::package::{BoxFileStore, File, FileStore};
 use crate::starlark::globals::module::{ModuleBuilder, ModuleExtra, RepoExtra};
 use allocative::Allocative;
 use starlark::environment::Module as StarlarkModule;
@@ -79,7 +79,7 @@ static MODULE_GLOBALS: LazyLock<Globals> = LazyLock::new(|| {
 });
 
 pub(crate) async fn eval_module(
-    files: &BoxedFileStore<'static>,
+    files: &BoxFileStore<'static>,
     path: &str,
     is_root: bool,
 ) -> anyhow::Result<Module> {
@@ -109,7 +109,7 @@ pub(crate) async fn eval_module(
 // and change this into eval_module() -> Result<ModuleBuilder>.
 // The includes loop then becomes ModuleBuilder.merge_into() or similar.
 async fn eval_module_include(
-    files: &BoxedFileStore<'static>,
+    files: &BoxFileStore<'static>,
     path: &str,
     is_root: bool,
 ) -> anyhow::Result<ModuleBuilder<'static>> {

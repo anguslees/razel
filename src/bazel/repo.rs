@@ -6,12 +6,12 @@ use crate::{
     bazel::{
         label::{ApparentRepo, CanonicalRepo, MAIN_REPO},
         package::{
-            BoxFile, BoxedFileStore, Digest, DigestFunction, DynFileStore, File, FileStore, Package,
+            BoxFile, BoxFileStore, Digest, DigestFunction, DynFileStore, File, FileStore, Package,
         },
     },
     workspace::Workspace,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 
@@ -26,7 +26,7 @@ pub struct Repository<'a> {
     repo_name: ApparentRepo<'a>,
     canonical_name: CanonicalRepo<'a>,
     repo_mapping: HashMap<ApparentRepo<'a>, CanonicalRepo<'a>>,
-    files: BoxedFileStore<'a>,
+    files: BoxFileStore<'a>,
     // TODO: include info from REPO.bazel, and use in read_package()
 }
 
@@ -34,7 +34,7 @@ impl<'a> Repository<'a> {
     pub async fn new(
         workspace: std::sync::Arc<Workspace>,
         canonical_name: CanonicalRepo<'static>,
-        files: BoxedFileStore<'static>,
+        files: BoxFileStore<'static>,
     ) -> anyhow::Result<Repository<'static>>
     where
         'a: 'static,
@@ -79,14 +79,14 @@ impl<'a> Repository<'a> {
         self.canonical_name.clone()
     }
 
-    pub fn files(&self) -> &BoxedFileStore<'a> {
+    pub fn files(&self) -> &BoxFileStore<'a> {
         &self.files
     }
 
     pub async fn read_package(
         &self,
         pkg: &str,
-    ) -> Result<Package<BoxedFileStore<'a>>, std::io::Error> {
+    ) -> Result<Package<BoxFileStore<'a>>, std::io::Error> {
         // Bazel looks for BUILD.bazel first, then BUILD. It's an error if both exist.
         // We read both in parallel to maximize performance.
         let build_bazel_path = format!("{pkg}/BUILD.bazel");
@@ -212,11 +212,11 @@ impl File for LocalFile {
 
 #[derive(Debug, Clone)]
 pub struct InMemoryFileStore {
-    files: std::collections::HashMap<String, Vec<u8>>,
+    files: HashMap<String, Vec<u8>>,
 }
 
 impl InMemoryFileStore {
-    pub fn new(files: std::collections::HashMap<String, Vec<u8>>) -> Self {
+    pub fn new(files: HashMap<String, Vec<u8>>) -> Self {
         Self { files }
     }
 }
@@ -225,10 +225,10 @@ impl FileStore for InMemoryFileStore {
     type File = InMemoryFile;
 
     fn read_file(&self, path: &str) -> BoxFuture<'_, Result<Self::File, std::io::Error>> {
-        // TODO: fix return lifetimes so we can use &self and delay lookup until async body is executed.
-        let content = self.files.get(path).cloned();
         let path_str = path.to_string();
         async move {
+            // This files.get() is deliberately delayed until the future executes, since it represents the "expensive" read_file operation.
+            let content = self.files.get(&path_str).cloned();
             if let Some(content) = content {
                 Ok(InMemoryFile { content })
             } else {
@@ -243,13 +243,10 @@ impl FileStore for InMemoryFileStore {
 
     fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<String>, std::io::Error>> {
         let dir_path = std::path::PathBuf::from(path);
-        // Need to clone necessary data for async block.
-        // TODO: fix return lifetimes so this clone is unnecessary.
-        let keys: Vec<String> = self.files.keys().cloned().collect();
-
         async move {
-            let results: std::collections::HashSet<_> = keys
-                .iter()
+            let results: HashSet<_> = self
+                .files
+                .keys()
                 .filter_map(|file_path_str| {
                     std::path::Path::new(file_path_str)
                         .strip_prefix(&dir_path)
@@ -332,13 +329,13 @@ pub mod test {
     #[tokio::test]
     async fn test_type_erased_map() {
         // Create a map of type-erased FileStores
-        let mut map: HashMap<String, BoxedFileStore> = HashMap::new();
+        let mut map: HashMap<String, BoxFileStore> = HashMap::new();
 
         // Add LocalFileStore
         let local_store = LocalFileStore::new(std::path::PathBuf::from("/tmp"));
         // Explicitly box the store to use the manual bridge implementation
         // Box<LocalFileStore> implements FileStore<File=BoxFile>
-        let boxed_local: BoxedFileStore = std::sync::Arc::from(DynFileStore::new_box(Box::new(
+        let boxed_local: BoxFileStore = std::sync::Arc::from(DynFileStore::new_box(Box::new(
             crate::bazel::package::TypeErasingFileStore(local_store),
         )));
         map.insert("local".to_string(), boxed_local);
@@ -347,7 +344,7 @@ pub mod test {
         let memory_files = HashMap::from([("foo".to_string(), b"bar".to_vec())]);
         let memory_store = InMemoryFileStore::new(memory_files);
         // InMemoryFileStore -> Box<InMemoryFileStore> -> FileStore -> DynFileStore -> Box<DynFileStore>
-        let boxed_memory: BoxedFileStore<'static> = std::sync::Arc::from(DynFileStore::new_box(
+        let boxed_memory: BoxFileStore<'static> = std::sync::Arc::from(DynFileStore::new_box(
             Box::new(crate::bazel::package::TypeErasingFileStore(memory_store)),
         ));
         map.insert("memory".to_string(), boxed_memory);

@@ -3,7 +3,7 @@ use futures::{FutureExt, TryFutureExt};
 use std::future::IntoFuture;
 
 use crate::bazel::label::{CanonicalRepo, MAIN_REPO};
-use crate::bazel::package::{BoxedFileStore, DynFileStore};
+use crate::bazel::package::{BoxFileStore, DynFileStore};
 use crate::bazel::repo::{LocalFileStore, Repository};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -49,7 +49,7 @@ impl Workspace {
 
         // Create the main repository
         // Use Box to implement FileStore for BoxedFileStore
-        let files: BoxedFileStore<'static> = std::sync::Arc::from(DynFileStore::new_box(Box::new(
+        let files: BoxFileStore<'static> = std::sync::Arc::from(DynFileStore::new_box(Box::new(
             crate::bazel::package::TypeErasingFileStore(LocalFileStore::new(current_dir)),
         )));
 

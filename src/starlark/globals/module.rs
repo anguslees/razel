@@ -1,5 +1,5 @@
 use crate::bazel::bzlmod::BazelDep;
-use crate::bazel::package::BoxedFileStore;
+use crate::bazel::package::BoxFileStore;
 use allocative::Allocative;
 use derive_more::Display;
 use starlark::any::ProvidesStaticType;
@@ -42,11 +42,11 @@ pub(crate) struct ModuleBuilder<'a> {
     pub(crate) use_extensions: Vec<String>,
     pub(crate) includes: Vec<String>,
     #[allocative(skip)]
-    pub(crate) files: BoxedFileStore<'a>,
+    pub(crate) files: BoxFileStore<'a>,
 }
 
 impl<'a> ModuleBuilder<'a> {
-    pub(crate) fn new(files: BoxedFileStore<'a>, is_root_module: bool) -> Self {
+    pub(crate) fn new(files: BoxFileStore<'a>, is_root_module: bool) -> Self {
         Self {
             is_root_module,
             ignore_dev_dependency: false,
@@ -77,13 +77,13 @@ impl<'a> ModuleBuilder<'a> {
 pub(crate) struct ModuleExtra(std::sync::Arc<std::sync::Mutex<ModuleBuilder<'static>>>);
 
 impl ModuleExtra {
-    pub(crate) fn new(files: BoxedFileStore<'static>) -> Self {
+    pub(crate) fn new(files: BoxFileStore<'static>) -> Self {
         Self(std::sync::Arc::new(std::sync::Mutex::new(
             ModuleBuilder::new(files, false),
         )))
     }
 
-    pub(crate) fn new_root(files: BoxedFileStore<'static>) -> Self {
+    pub(crate) fn new_root(files: BoxFileStore<'static>) -> Self {
         Self(std::sync::Arc::new(std::sync::Mutex::new(
             ModuleBuilder::new(files, true),
         )))
