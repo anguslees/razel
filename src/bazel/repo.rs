@@ -1,34 +1,92 @@
 #![allow(dead_code, unused)]
 
-use crate::bazel::package::{Digest, DigestFunction, File, FileStore, Package};
-use std::collections::HashMap;
+use futures::future::{BoxFuture, FusedFuture, FutureExt};
 
-pub struct Repository<F: FileStore> {
-    repo_name: String,
-    canonical_name: String,
-    repositories: HashMap<String, String>,
-    files: F,
+use crate::{
+    bazel::{
+        label::{ApparentRepo, CanonicalRepo, MAIN_REPO},
+        package::{
+            BoxFile, BoxFileStore, Digest, DigestFunction, DynFileStore, File, FileStore, Package,
+        },
+    },
+    workspace::Workspace,
+};
+use std::collections::{HashMap, HashSet};
+use tokio::fs;
+use tokio::io::AsyncReadExt;
+
+/// A directory tree with a boundary marker file at its root, containing source files that can be used in a Bazel build. Often shortened to just repo.
+///
+/// A repo boundary marker file can be `MODULE.bazel` (signaling that this repo represents a Bazel module), `REPO.bazel` (see below), or in legacy contexts, `WORKSPACE` or `WORKSPACE.bazel`. Any repo boundary marker file will signify the boundary of a repo; multiple such files can coexist in a directory.
+///
+/// The "main" repository is the repository in which the current Bazel command is being run.
+/// The root of the main repository is also known as the _workspace root_.
+#[derive(Debug)]
+pub struct Repository<'a> {
+    repo_name: ApparentRepo<'a>,
+    canonical_name: CanonicalRepo<'a>,
+    repo_mapping: HashMap<ApparentRepo<'a>, CanonicalRepo<'a>>,
+    files: BoxFileStore<'a>,
+    // TODO: include info from REPO.bazel, and use in read_package()
 }
 
-impl<F: FileStore + Clone> Repository<F> {
-    pub fn new(repo_name: String, canonical_name: String, files: F) -> Self {
-        Self {
+impl<'a> Repository<'a> {
+    pub async fn new(
+        workspace: std::sync::Arc<Workspace>,
+        canonical_name: CanonicalRepo<'static>,
+        files: BoxFileStore<'static>,
+    ) -> anyhow::Result<Repository<'static>>
+    where
+        'a: 'static,
+    {
+        let is_root = canonical_name == MAIN_REPO;
+        // Pass the file store to eval_module to handle reading MODULE.bazel and includes
+        let module = crate::bazel::bzlmod::eval_module(&files, "MODULE.bazel", is_root).await?;
+
+        if is_root {
+            // TODO: copy overrides into Workspace
+        }
+
+        let mut repo_mapping = HashMap::with_capacity(module.bazel_deps.len());
+        for dep in module.bazel_deps {
+            // TODO: this should go via a Workspace method so we can pick up overrides.
+
+            let canonical_name = CanonicalRepo::new(format!("{}+{}", dep.name, dep.version));
+            repo_mapping.insert(
+                ApparentRepo::new(dep.repo_name.clone()),
+                canonical_name.clone(),
+            );
+
+            // Create Repository in Workspace (if it doesn't already exist)
+            // TODO: This bit should move into a method on Workspace
+            let repo = async {
+                anyhow::bail!("Not implemented");
+            };
+            workspace.add_repository(canonical_name, repo);
+        }
+
+        let repo_name = ApparentRepo::new(module.repo_name);
+
+        Ok(Self {
             repo_name,
             canonical_name,
-            repositories: HashMap::new(),
+            repo_mapping,
             files,
-        }
+        })
     }
 
-    pub fn canonical_name(&self) -> &str {
-        &self.canonical_name
+    pub fn canonical_name(&self) -> CanonicalRepo<'a> {
+        self.canonical_name.clone()
     }
 
-    pub fn add_repository(&mut self, name: String, canonical_name: String) {
-        self.repositories.insert(name, canonical_name);
+    pub fn files(&self) -> &BoxFileStore<'a> {
+        &self.files
     }
 
-    pub async fn read_package(&self, pkg: &str) -> Result<Package<F>, std::io::Error> {
+    pub async fn read_package(
+        &self,
+        pkg: &str,
+    ) -> Result<Package<BoxFileStore<'a>>, std::io::Error> {
         // Bazel looks for BUILD.bazel first, then BUILD. It's an error if both exist.
         // We read both in parallel to maximize performance.
         let build_bazel_path = format!("{pkg}/BUILD.bazel");
@@ -70,12 +128,58 @@ impl<F: FileStore + Clone> Repository<F> {
         }
     }
 
-    pub async fn read_file(&self, path: &str) -> Result<F::File, std::io::Error> {
+    pub async fn read_file(&self, path: &str) -> Result<BoxFile<'a>, std::io::Error> {
         self.files.read_file(path).await
     }
 
     pub async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error> {
         self.files.read_dir(path).await
+    }
+}
+
+// Concrete FileStore implementations
+#[derive(Debug, Clone)]
+pub struct LocalFileStore {
+    root: std::path::PathBuf,
+}
+
+impl LocalFileStore {
+    pub fn new(root: std::path::PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+impl FileStore for LocalFileStore {
+    type File = LocalFile;
+
+    fn read_file(&self, path: &str) -> BoxFuture<'_, Result<Self::File, std::io::Error>> {
+        let full_path = self.root.join(path);
+        async move {
+            // Ensure path exists
+            if !full_path.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {:?}", full_path),
+                ));
+            }
+            Ok(LocalFile::new(full_path))
+        }
+        .boxed()
+    }
+
+    fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<String>, std::io::Error>> {
+        let full_path = self.root.join(path);
+        async move {
+            let mut read_dir = fs::read_dir(full_path).await?;
+            let mut results = Vec::new();
+
+            while let Some(entry) = read_dir.next_entry().await? {
+                results.push(entry.file_name().to_string_lossy().to_string());
+            }
+
+            Ok(results)
+        }
+        .boxed()
     }
 }
 
@@ -91,115 +195,61 @@ impl LocalFile {
 }
 
 impl File for LocalFile {
-    type AsyncRead = tokio::fs::File;
+    type AsyncRead = fs::File;
 
-    async fn open(&self) -> Result<Self::AsyncRead, std::io::Error> {
-        tokio::fs::File::open(&self.path).await
+    fn open(&self) -> BoxFuture<'_, Result<Self::AsyncRead, std::io::Error>> {
+        let path = self.path.clone();
+        async move { fs::File::open(path).await }.boxed()
     }
 
-    async fn digest(&self, _digest_function: DigestFunction) -> Result<Digest, std::io::Error> {
-        // TODO: Implement actual digest calculation
-        Ok(Digest {
-            hash: "dummy_hash".to_string(),
-            size_bytes: 0,
-        })
-    }
-}
-
-pub struct LocalFileStore {
-    root: std::path::PathBuf,
-}
-
-impl LocalFileStore {
-    #[allow(dead_code)]
-    pub fn new(root: std::path::PathBuf) -> Self {
-        Self { root }
+    fn digest(
+        &self,
+        _digest_function: DigestFunction,
+    ) -> BoxFuture<'_, Result<Digest, std::io::Error>> {
+        async move { todo!("Implement digest for LocalFile") }.boxed()
     }
 }
 
-impl FileStore for LocalFileStore {
-    type File = LocalFile;
+#[derive(Debug, Clone)]
+pub struct InMemoryFileStore {
+    files: HashMap<String, Vec<u8>>,
+}
 
-    async fn read_file(&self, path: &str) -> Result<Self::File, std::io::Error> {
-        let full_path = self.root.join(path);
-        Ok(LocalFile::new(full_path))
-    }
-
-    async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error> {
-        let full_path = self.root.join(path);
-        let mut entries = tokio::fs::read_dir(full_path).await?;
-        let mut results = Vec::new();
-
-        while let Some(entry) = entries.next_entry().await? {
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            results.push(file_name);
-        }
-
-        Ok(results)
+impl InMemoryFileStore {
+    pub fn new(files: HashMap<String, Vec<u8>>) -> Self {
+        Self { files }
     }
 }
 
-#[cfg(test)]
-pub mod test {
-    use super::*;
-    use std::collections::HashMap;
-    use tokio::io::{self};
+impl FileStore for InMemoryFileStore {
+    type File = InMemoryFile;
 
-    pub struct InMemoryFile {
-        content: Vec<u8>,
+    fn read_file(&self, path: &str) -> BoxFuture<'_, Result<Self::File, std::io::Error>> {
+        let path_str = path.to_string();
+        async move {
+            // This files.get() is deliberately delayed until the future executes, since it represents the "expensive" read_file operation.
+            let content = self.files.get(&path_str).cloned();
+            if let Some(content) = content {
+                Ok(InMemoryFile { content })
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {}", path_str),
+                ))
+            }
+        }
+        .boxed()
     }
 
-    impl InMemoryFile {
-        pub fn new(content: Vec<u8>) -> Self {
-            Self { content }
-        }
-    }
-
-    impl File for InMemoryFile {
-        type AsyncRead = std::io::Cursor<Vec<u8>>;
-
-        async fn open(&self) -> Result<Self::AsyncRead, std::io::Error> {
-            Ok(std::io::Cursor::new(self.content.clone()))
-        }
-
-        async fn digest(&self, _digest_function: DigestFunction) -> Result<Digest, std::io::Error> {
-            // TODO: Implement actual digest calculation for in-memory files
-            Ok(Digest {
-                hash: "dummy_hash".to_string(),
-                size_bytes: self.content.len() as i64,
-            })
-        }
-    }
-
-    pub struct InMemoryFileStore {
-        files: HashMap<String, Vec<u8>>,
-    }
-
-    impl InMemoryFileStore {
-        #[allow(dead_code)]
-        pub fn new(files: HashMap<String, Vec<u8>>) -> Self {
-            Self { files }
-        }
-    }
-
-    impl FileStore for InMemoryFileStore {
-        type File = InMemoryFile;
-
-        async fn read_file(&self, path: &str) -> Result<Self::File, std::io::Error> {
-            self.files
-                .get(path)
-                .map(|content| InMemoryFile::new(content.clone()))
-                .ok_or_else(|| std::io::Error::new(io::ErrorKind::NotFound, "File not found"))
-        }
-
-        async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error> {
-            let dir_path = std::path::Path::new(path);
-            let results: std::collections::HashSet<_> = self
+    fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<String>, std::io::Error>> {
+        let dir_path = std::path::PathBuf::from(path);
+        async move {
+            let results: HashSet<_> = self
                 .files
                 .keys()
                 .filter_map(|file_path_str| {
                     std::path::Path::new(file_path_str)
-                        .strip_prefix(dir_path)
+                        .strip_prefix(&dir_path)
                         .ok()
                         .and_then(|p| p.components().next())
                         .and_then(|c| match c {
@@ -212,7 +262,36 @@ pub mod test {
                 .collect();
             Ok(results.into_iter().collect())
         }
+        .boxed()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct InMemoryFile {
+    content: Vec<u8>,
+}
+
+impl File for InMemoryFile {
+    type AsyncRead = std::io::Cursor<Vec<u8>>;
+
+    fn open(&self) -> BoxFuture<'_, Result<Self::AsyncRead, std::io::Error>> {
+        let content = self.content.clone();
+        async move { Ok(std::io::Cursor::new(content)) }.boxed()
+    }
+
+    fn digest(
+        &self,
+        _digest_function: DigestFunction,
+    ) -> BoxFuture<'_, Result<Digest, std::io::Error>> {
+        async move { todo!("Implement digest for InMemoryFile") }.boxed()
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+    use super::*;
+    use std::collections::HashMap;
+    use tokio::io::{self};
 
     #[tokio::test]
     async fn test_in_memory_file_store_read_dir() {
@@ -245,5 +324,39 @@ pub mod test {
         // Test non-existent directory
         let none_entries = store.read_dir("nonexistent").await.unwrap();
         assert!(none_entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_type_erased_map() {
+        // Create a map of type-erased FileStores
+        let mut map: HashMap<String, BoxFileStore> = HashMap::new();
+
+        // Add LocalFileStore
+        let local_store = LocalFileStore::new(std::path::PathBuf::from("/tmp"));
+        // Explicitly box the store to use the manual bridge implementation
+        // Box<LocalFileStore> implements FileStore<File=BoxFile>
+        let boxed_local: BoxFileStore = std::sync::Arc::from(DynFileStore::new_box(Box::new(
+            crate::bazel::package::TypeErasingFileStore(local_store),
+        )));
+        map.insert("local".to_string(), boxed_local);
+
+        // Add InMemoryFileStore
+        let memory_files = HashMap::from([("foo".to_string(), b"bar".to_vec())]);
+        let memory_store = InMemoryFileStore::new(memory_files);
+        // InMemoryFileStore -> Box<InMemoryFileStore> -> FileStore -> DynFileStore -> Box<DynFileStore>
+        let boxed_memory: BoxFileStore<'static> = std::sync::Arc::from(DynFileStore::new_box(
+            Box::new(crate::bazel::package::TypeErasingFileStore(memory_store)),
+        ));
+        map.insert("memory".to_string(), boxed_memory);
+
+        // Verify retrieval and usage
+        let store = map.get("memory").unwrap();
+        let file_content = store.read_file("foo").await.unwrap();
+
+        use tokio::io::AsyncReadExt;
+        let mut content = Vec::new();
+        let mut reader = file_content.open().await.unwrap();
+        reader.read_to_end(&mut content).await.unwrap();
+        assert_eq!(content, b"bar");
     }
 }

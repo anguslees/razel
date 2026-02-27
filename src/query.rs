@@ -10,11 +10,10 @@ pub async fn query<W>(out: &mut W, _config: Arc<Configuration>, query: &str) -> 
 where
     W: AsyncWrite + Unpin,
 {
-    let workspace = Workspace::new(".")?;
+    let workspace = Workspace::new(".").await?;
     println!("Workspace path: {:?}", workspace.path());
 
-    let module_path = workspace.path().join("MODULE.bazel");
-    let module = crate::bazel::bzlmod::eval_module(&module_path, true).await?;
+    let module = workspace.main_module().await?;
 
     println!(
         "MODULE.bazel defined module name {}, repo_name={}, version={}",

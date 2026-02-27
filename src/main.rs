@@ -8,6 +8,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod bazel;
 mod query;
+mod shared_error;
 mod starlark;
 mod workspace;
 
