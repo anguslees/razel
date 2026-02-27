@@ -15,13 +15,17 @@ mod workspace;
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 #[clap(propagate_version = true)]
-struct Cli {
+pub struct Cli {
     #[clap(subcommand)]
-    command: Commands,
+    pub command: Commands,
+
+    /// Whether to ignore dev dependencies
+    #[clap(long, global = true)]
+    pub ignore_dev_dependency: bool,
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum Commands {
     /// Prints version information
     Version,
     /// Builds the specified targets
@@ -52,8 +56,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // TODO: initialise config from flags
-    let config = Arc::new(Configuration::new());
+    let config = Arc::new(Configuration::from_flags(&cli));
 
     fastrace::set_reporter(ConsoleReporter, fastrace::collector::Config::default());
 
