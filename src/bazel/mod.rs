@@ -10,9 +10,9 @@ pub(crate) struct Configuration {
 }
 
 impl Configuration {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn from_flags(cli: &crate::Cli) -> Self {
         Self {
-            ignore_dev_dependency: false,
+            ignore_dev_dependency: cli.ignore_dev_dependency,
         }
     }
 }
