@@ -13,14 +13,22 @@ mod starlark;
 mod workspace;
 
 #[derive(Parser)]
-#[clap(author, version, about, long_about = None)]
-#[clap(propagate_version = true)]
+#[command(author, version, about, long_about = None)]
+#[command(propagate_version = true)]
+#[command(rename_all = "snake_case")]
 pub struct Cli {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     pub command: Commands,
 
     /// Whether to ignore dev dependencies
-    #[clap(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        require_equals = true,
+        default_missing_value = "true",
+        num_args(0..=1),
+        value_name = "BOOL"
+    )]
     pub ignore_dev_dependency: bool,
 }
 
@@ -29,25 +37,19 @@ pub enum Commands {
     /// Prints version information
     Version,
     /// Builds the specified targets
-    Build {
-        #[clap(value_parser)]
-        targets: Vec<String>,
-    },
+    Build { targets: Vec<String> },
     /// Tests the specified targets
-    Test {
-        #[clap(value_parser)]
-        targets: Vec<String>,
-    },
+    Test { targets: Vec<String> },
     /// Runs the specified target
-    Run {
-        #[clap(value_parser)]
-        target: String,
-    },
+    Run { target: String },
     /// Queries for information about the build graph
-    Query {
-        #[clap(value_parser)]
-        query: String,
-    },
+    Query { query: String },
+}
+
+#[test]
+fn verify_cli() {
+    use clap::CommandFactory;
+    Cli::command().debug_assert();
 }
 
 #[tokio::main]
