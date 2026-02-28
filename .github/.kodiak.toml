@@ -1,5 +1,8 @@
 version = 1
 
+[approve]
+auto_approve_usernames = ["renovate"]
+
 [merge]
 # Do not require a specific label for Kodiak to merge a PR.
 # Kodiak will merge when branch protection rules (status checks, approvals) pass.
@@ -10,3 +13,7 @@ method = "squash"
 
 # Delete the branch after merging.
 delete_branch_on_merge = true
+
+[merge.message]
+title = "pull_request_title"
+body = "pull_request_body"
