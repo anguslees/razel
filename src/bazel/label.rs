@@ -106,9 +106,27 @@ impl<'a> From<CanonicalRepo<'a>> for Repo<'a> {
     }
 }
 
+impl<'a> From<&CanonicalRepo<'a>> for Repo<'a> {
+    fn from(r: &CanonicalRepo<'a>) -> Self {
+        Repo::Canonical(r.clone())
+    }
+}
+
 impl<'a> From<ApparentRepo<'a>> for Repo<'a> {
     fn from(r: ApparentRepo<'a>) -> Self {
         Repo::Apparent(r)
+    }
+}
+
+impl<'a> From<&ApparentRepo<'a>> for Repo<'a> {
+    fn from(r: &ApparentRepo<'a>) -> Self {
+        Repo::Apparent(r.clone())
+    }
+}
+
+impl<'a> From<&Repo<'a>> for Repo<'a> {
+    fn from(r: &Repo<'a>) -> Self {
+        r.clone()
     }
 }
 
@@ -307,7 +325,7 @@ impl<'a, R> Label<'a, R> {
     /// Corresponds to `Label.relative()` in Starlark.
     pub fn relative<'b>(&'b self, rel_path: &'b str) -> Result<Label<'b, Repo<'b>>, ParseError<'b>>
     where
-        R: Clone + Into<Repo<'b>>,
+        for<'c> &'c R: Into<Repo<'b>>,
     {
         parse_label(rel_path, self)
     }
@@ -446,13 +464,12 @@ fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, RelativeLabel<'a>, extra::E
 }
 
 /// Parses a label string.
-// TODO: Remove the `R: Clone` constraint
 pub fn parse_label<'a, R>(
     s: &'a str,
     context: &Label<'a, R>,
 ) -> Result<Label<'a, Repo<'a>>, ParseError<'a>>
 where
-    R: Into<Repo<'a>> + Clone,
+    for<'b> &'b R: Into<Repo<'a>>,
 {
     //log::debug!("Label parser grammar is {}", parser().debug().to_ebnf());
 
@@ -462,7 +479,7 @@ where
         .map_err(|errs| errs.into_iter().next().unwrap())?;
 
     Ok(Label::new(
-        relative.repo.unwrap_or_else(|| context.repo.clone().into()),
+        relative.repo.unwrap_or_else(|| (&context.repo).into()),
         relative.package.unwrap_or_else(|| context.package.clone()),
         relative.target.unwrap_or_else(|| context.target.clone()),
     ))
