@@ -2,6 +2,7 @@
 
 #![allow(dead_code, unused)]
 
+use chumsky::prelude::*;
 use std::{borrow::Cow, fmt, ops::Deref};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -362,8 +363,6 @@ struct RelativeLabel<'a> {
     package: Option<Cow<'a, str>>,
     target: Option<Cow<'a, str>>,
 }
-
-use chumsky::prelude::*;
 
 type ParseError<'a> = Rich<'a, char>;
 

@@ -10,6 +10,7 @@ mod bazel;
 mod query;
 mod shared_error;
 mod starlark;
+pub mod stream_tee;
 mod workspace;
 
 #[derive(Parser)]
