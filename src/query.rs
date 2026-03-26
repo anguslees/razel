@@ -217,7 +217,7 @@ impl<'a> Expr<'a> {
 
                 let l_mapped = l_stream.map(move |res| {
                     if let Ok(l) = &res {
-                        let mut s = seen_for_l.lock().unwrap();
+                        let mut s = seen_for_l.lock().expect("Mutex poisoned");
                         s.insert(l.clone());
                     }
                     res
@@ -225,7 +225,7 @@ impl<'a> Expr<'a> {
 
                 let r_filtered = r_stream.filter(move |res| match res {
                     Ok(l) => {
-                        let s = seen.lock().unwrap();
+                        let s = seen.lock().expect("Mutex poisoned");
                         futures::future::ready(!s.contains(l))
                     }
                     Err(_) => futures::future::ready(true),
@@ -251,28 +251,23 @@ where
     W: AsyncWrite + Unpin,
 {
     let workspace = Workspace::new(".").await?;
-    println!("Workspace path: {:?}", workspace.path());
-
     let module = workspace.main_module().await?;
-
-    println!(
-        "MODULE.bazel defined module name {}, repo_name={}, version={}",
-        module.name, module.repo_name, module.version
-    );
-    println!("MODULE.bazel defined module {module:?}");
 
     // Construct repos from bzlmod declarations
     // Global Map of Canonical name -> FusedFuture<dyn Repo>
     // Each repo (including _main) needs a Map of repo name -> Canonical name
 
-    let ast = parser()
-        .parse(query)
-        .into_result()
-        .map_err(|errs| anyhow::Error::msg(errs.first().expect("No errors?").to_string()))?;
+    let ast = parser().parse(query).into_result().map_err(|errs| {
+        anyhow::anyhow!(
+            "Failed to parse query: {}\nSee https://bazel.build/reference/query for syntax",
+            errs.into_iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    })?;
 
-    println!("Parsed query: {ast:#?}");
-    out.write_all(query.as_bytes()).await?;
-    out.write_all(b"\n").await?;
+
 
     // Evaluate the query!
     let mut result_stream = ast.inner.eval(&QueryContext::default());
@@ -296,7 +291,11 @@ mod tests {
     use super::*;
 
     fn parse(input: &str) -> Expr<'_> {
-        parser().parse(input).into_result().unwrap().inner
+        parser()
+            .parse(input)
+            .into_result()
+            .expect("Parse failed")
+            .inner
     }
 
     #[test]
@@ -370,7 +369,7 @@ mod tests {
         // Pure integers are not valid top-level expressions in Bazel queries.
         // Outside a function arg they are parsed as targets.
         assert_eq!(
-            parser().parse("7").into_result().unwrap().inner,
+            parser().parse("7").into_result().expect("parse failed").inner,
             Expr::Target("7")
         );
     }
@@ -386,7 +385,11 @@ mod tests {
 
         // May contain + if starts with @@
         assert_eq!(
-            parser().parse("@@foo+bar").into_result().unwrap().inner,
+            parser()
+                .parse("@@foo+bar")
+                .into_result()
+                .expect("parse failed")
+                .inner,
             Expr::Target("@@foo+bar")
         );
     }

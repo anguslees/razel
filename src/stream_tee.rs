@@ -23,7 +23,7 @@ impl<S: Stream> StreamTeeExt for S {
         };
 
         let shared = Arc::new(Mutex::new(state));
-        shared.lock().unwrap().cursors.insert(0, 0);
+        shared.lock().expect("Mutex poisoned").cursors.insert(0, 0);
 
         StreamTee { id: 0, shared }
     }
@@ -51,7 +51,11 @@ impl<S: Stream> SharedState<S> {
         }
 
         // Find the minimum cursor across all active consumers.
-        let min_cursor = *self.cursors.values().min().unwrap();
+        let min_cursor = *self
+            .cursors
+            .values()
+            .min()
+            .expect("at least one cursor to exist for GC");
 
         // Remove elements from the front of the deque until its starting index matches min_cursor
         while self.buffer_start_index < min_cursor && !self.buffer.is_empty() {
@@ -68,7 +72,7 @@ pub struct StreamTee<S: Stream> {
 
 impl<S: Stream> Clone for StreamTee<S> {
     fn clone(&self) -> Self {
-        let mut state = self.shared.lock().unwrap();
+        let mut state = self.shared.lock().expect("Mutex poisoned");
         let new_id = state.next_id;
         state.next_id += 1;
 
@@ -88,7 +92,7 @@ impl<S: Stream> Clone for StreamTee<S> {
 
 impl<S: Stream> Drop for StreamTee<S> {
     fn drop(&mut self) {
-        let mut state = self.shared.lock().unwrap();
+        let mut state = self.shared.lock().expect("Mutex poisoned");
         state.cursors.remove(&self.id);
         state.wakers.remove(&self.id);
         state.gc();
@@ -110,7 +114,7 @@ where
     type Item = S::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut state = self.shared.lock().unwrap();
+        let mut state = self.shared.lock().expect("Mutex poisoned");
         let cursor_val = *state.cursors.get(&self.id).expect("cursor must exist");
         let relative_index = cursor_val - state.buffer_start_index;
 
@@ -119,7 +123,7 @@ where
             let item = state.buffer[relative_index].clone();
 
             // Advance cursor and GC
-            *state.cursors.get_mut(&self.id).unwrap() += 1;
+            *state.cursors.get_mut(&self.id).expect("cursor must exist") += 1;
             state.gc();
 
             return Poll::Ready(Some(item));
@@ -135,7 +139,7 @@ where
                 state.buffer.push_back(item.clone());
 
                 // Advance our cursor
-                *state.cursors.get_mut(&self.id).unwrap() += 1;
+                *state.cursors.get_mut(&self.id).expect("cursor must exist") += 1;
 
                 // Wake up all other consumers that might be waiting for this item
                 for (id, waker) in state.wakers.drain() {
@@ -207,7 +211,7 @@ mod tests {
         assert_eq!(t1.next().await, Some(3));
 
         {
-            let state = t1.shared.lock().unwrap();
+            let state = t1.shared.lock().expect("Mutex poisioned");
             assert_eq!(state.buffer.len(), 3); // items 1, 2, 3 buffered because t2 is at index 0
         }
 
@@ -216,14 +220,14 @@ mod tests {
         assert_eq!(t2.next().await, Some(2));
 
         {
-            let state = t1.shared.lock().unwrap();
+            let state = t1.shared.lock().expect("Mutex poisioned");
             assert_eq!(state.buffer.len(), 1); // 1 and 2 gc'd, only 3 is buffered since t2 is at index 2
         }
 
         // t2 catches up fully
         assert_eq!(t2.next().await, Some(3));
         {
-            let state = t1.shared.lock().unwrap();
+            let state = t1.shared.lock().expect("Mutex poisioned");
             assert_eq!(state.buffer.len(), 0); // all items consumed!
         }
     }
@@ -240,7 +244,7 @@ mod tests {
         assert_eq!(t1.next().await, Some(3));
 
         {
-            let state = t1.shared.lock().unwrap();
+            let state = t1.shared.lock().expect("Mutex poisioned");
             assert_eq!(state.buffer.len(), 3);
         }
 
@@ -250,7 +254,7 @@ mod tests {
         {
             // Now t1 is the only consumer, and its cursor is at index 3,
             // so the entire buffer should have been cleared instantly via `Drop`.
-            let state = t1.shared.lock().unwrap();
+            let state = t1.shared.lock().expect("Mutex poisioned");
             assert_eq!(state.buffer.len(), 0);
         }
 

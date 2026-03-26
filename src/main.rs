@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
             unimplemented!("Run command is not yet implemented.");
         }
         Commands::Query { query: query_str } => {
-            println!("Querying: {query_str}");
+
             query::query(&mut stdout, config, query_str).await?;
         }
     }
