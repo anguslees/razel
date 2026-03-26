@@ -14,14 +14,24 @@ use tokio::io::AsyncWriteExt;
 pub type QueryResult<'a> = Result<Label<'a, Repo<'a>>, String>;
 pub type QueryStream<'a> = BoxStream<'a, QueryResult<'a>>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct QueryContext<'a> {
+    #[allow(dead_code)]
+    pub workspace: &'a Workspace,
     pub variables: HashMap<&'a str, StreamTee<QueryStream<'a>>>,
+}
+
+impl<'a> QueryContext<'a> {
+    pub fn new(workspace: &'a Workspace) -> Self {
+        Self {
+            workspace,
+            variables: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr<'a> {
-    Target(&'a str),
     String(&'a str),
     Int(i64),
     Function(&'a str, Vec<Spanned<Expr<'a>>>),
@@ -115,7 +125,7 @@ pub fn parser<'a>() -> impl Parser<'a, &'a str, Spanned<Expr<'a>>, extra::Err<Ri
 
         let quoted_string = string_literal.or(single_string_literal).map(Expr::String);
 
-        let target = unquoted_word.map(Expr::Target);
+        let pattern = unquoted_word.map(Expr::String);
 
         let atom = choice((
             paren_expr,
@@ -123,7 +133,7 @@ pub fn parser<'a>() -> impl Parser<'a, &'a str, Spanned<Expr<'a>>, extra::Err<Ri
             let_binding,
             variable,
             quoted_string,
-            target,
+            pattern,
         ))
         .padded()
         .map_with(|ast, e| Spanned {
@@ -173,10 +183,13 @@ pub fn parser<'a>() -> impl Parser<'a, &'a str, Spanned<Expr<'a>>, extra::Err<Ri
 impl<'a> Expr<'a> {
     pub fn eval(&self, ctx: &QueryContext<'a>) -> QueryStream<'a> {
         match self {
-            Expr::Target(s) | Expr::String(s) => match parse_label(s, &MAIN_REPO_ROOT) {
-                Ok(label) => stream::once(async move { Ok(label) }).boxed(),
-                Err(e) => stream::once(async move { Err(e.to_string()) }).boxed(),
-            },
+            Expr::String(s) => {
+                // TODO: this should be interpreted as a pattern rather than just a single label
+                match parse_label(s, &MAIN_REPO_ROOT) {
+                    Ok(label) => stream::once(async move { Ok(label) }).boxed(),
+                    Err(e) => stream::once(async move { Err(e.to_string()) }).boxed(),
+                }
+            }
             Expr::Int(_) => {
                 stream::once(async { Err("Int not supported out of function context".to_string()) })
                     .boxed()
@@ -251,7 +264,6 @@ where
     W: AsyncWrite + Unpin,
 {
     let workspace = Workspace::new(".").await?;
-    let module = workspace.main_module().await?;
 
     // Construct repos from bzlmod declarations
     // Global Map of Canonical name -> FusedFuture<dyn Repo>
@@ -268,7 +280,7 @@ where
     })?;
 
     // Evaluate the query!
-    let mut result_stream = ast.inner.eval(&QueryContext::default());
+    let mut result_stream = ast.inner.eval(&QueryContext::new(&workspace));
 
     while let Some(res) = result_stream.next().await {
         match res {
@@ -297,8 +309,12 @@ mod tests {
     }
 
     #[test]
-    fn test_target() {
-        assert_eq!(parse("//foo:bar"), Expr::Target("//foo:bar"));
+    fn test_wildcard() {
+        assert_eq!(parse("//foo:bar"), Expr::String("//foo:bar"));
+        assert_eq!(parse("//foo/..."), Expr::String("//foo/..."));
+        assert_eq!(parse("//foo/...:*"), Expr::String("//foo/...:*"));
+        assert_eq!(parse("//foo:*"), Expr::String("//foo:*"));
+        assert_eq!(parse("//foo:all"), Expr::String("//foo:all"));
     }
 
     #[test]
@@ -306,7 +322,7 @@ mod tests {
         if let Expr::Function(name, args) = parse("deps(//foo)") {
             assert_eq!(name, "deps");
             assert_eq!(args.len(), 1);
-            assert_eq!(args[0].inner, Expr::Target("//foo"));
+            assert_eq!(args[0].inner, Expr::String("//foo"));
         } else {
             panic!("Expected deps function");
         }
@@ -316,8 +332,8 @@ mod tests {
     fn test_union() {
         match parse("//foo + //bar") {
             Expr::SetOp(SetOp::Union, left, right) => {
-                assert_eq!(left.inner, Expr::Target("//foo"));
-                assert_eq!(right.inner, Expr::Target("//bar"));
+                assert_eq!(left.inner, Expr::String("//foo"));
+                assert_eq!(right.inner, Expr::String("//bar"));
             }
             _ => panic!("Expected union op"),
         }
@@ -327,8 +343,8 @@ mod tests {
     fn test_intersection() {
         match parse("//foo ^ //bar") {
             Expr::SetOp(SetOp::Intersect, left, right) => {
-                assert_eq!(left.inner, Expr::Target("//foo"));
-                assert_eq!(right.inner, Expr::Target("//bar"));
+                assert_eq!(left.inner, Expr::String("//foo"));
+                assert_eq!(right.inner, Expr::String("//bar"));
             }
             _ => panic!("Expected intersect op"),
         }
@@ -338,11 +354,11 @@ mod tests {
     fn test_precedence() {
         match parse("//a + //b ^ //c") {
             Expr::SetOp(SetOp::Union, left, right) => {
-                assert_eq!(left.inner, Expr::Target("//a"));
+                assert_eq!(left.inner, Expr::String("//a"));
                 match &right.inner {
                     Expr::SetOp(SetOp::Intersect, inner_left, inner_right) => {
-                        assert_eq!(inner_left.inner, Expr::Target("//b"));
-                        assert_eq!(inner_right.inner, Expr::Target("//c"));
+                        assert_eq!(inner_left.inner, Expr::String("//b"));
+                        assert_eq!(inner_right.inner, Expr::String("//c"));
                     }
                     _ => panic!("Expected inner intersect"),
                 }
@@ -355,7 +371,7 @@ mod tests {
         if let Expr::Function(name, args) = parse("deps(//foo, 7)") {
             assert_eq!(name, "deps");
             assert_eq!(args.len(), 2);
-            assert_eq!(args[0].inner, Expr::Target("//foo"));
+            assert_eq!(args[0].inner, Expr::String("//foo"));
             assert_eq!(args[1].inner, Expr::Int(7));
         } else {
             panic!("Expected deps function with Int argument");
@@ -372,7 +388,7 @@ mod tests {
                 .into_result()
                 .expect("parse failed")
                 .inner,
-            Expr::Target("7")
+            Expr::String("7")
         );
     }
 
@@ -392,7 +408,7 @@ mod tests {
                 .into_result()
                 .expect("parse failed")
                 .inner,
-            Expr::Target("@@foo+bar")
+            Expr::String("@@foo+bar")
         );
     }
 }
