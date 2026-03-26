@@ -28,7 +28,9 @@ pub struct BazelDep {
 /// See https://bazel.build/external/module
 #[derive(Debug, Clone)]
 pub struct Module {
+    #[allow(dead_code)]
     pub name: String,
+    #[allow(dead_code)]
     pub version: String,
     pub repo_name: String,
     pub bazel_deps: Vec<BazelDep>,

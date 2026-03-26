@@ -16,7 +16,7 @@ type RepositoryFuture = Shared<BoxFuture<'static, Result<Arc<Repository<'static>
 ///
 /// Most interactions with this codebase start from the Workspace.
 pub struct Workspace {
-    pub path: PathBuf,
+    path: PathBuf,
     repositories: RwLock<HashMap<CanonicalRepo<'static>, RepositoryFuture>>,
 }
 
@@ -64,10 +64,12 @@ impl Workspace {
         Ok(ws)
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    #[allow(dead_code)]
     pub async fn main_repo(&self) -> anyhow::Result<Arc<Repository<'static>>> {
         let repo_future = self
             .repositories
@@ -82,6 +84,7 @@ impl Workspace {
             .map_err(|e| anyhow::Error::new(e).context("Failed to evaluate main repo"))
     }
 
+    #[allow(dead_code)]
     pub async fn main_module(&self) -> anyhow::Result<crate::bazel::bzlmod::Module> {
         let repo = self.main_repo().await?;
         crate::bazel::bzlmod::eval_module(repo.files(), "MODULE.bazel", true).await

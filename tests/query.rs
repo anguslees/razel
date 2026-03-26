@@ -6,10 +6,10 @@ fn test_query_basic_hello_world() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
     cmd.current_dir("examples/basic");
 
-    cmd.arg("query").arg("//:hello_world_txt");
+    cmd.arg("query").arg(":hello_world");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("//:hello_world_txt"));
+        .stdout(predicate::str::contains("//:hello_world"));
 
     Ok(())
 }
