@@ -4,10 +4,9 @@ use crate::bazel::repo::{LocalFileStore, Repository};
 use crate::shared_error::SharedError;
 use futures::FutureExt;
 use futures::TryFutureExt;
-use futures::future::{BoxFuture, Shared, try_select};
+use futures::future::{BoxFuture, Shared};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::pin::pin;
 use std::sync::{Arc, RwLock};
 
 type RepositoryFuture = Shared<BoxFuture<'static, Result<Arc<Repository<'static>>, SharedError>>>;
@@ -22,19 +21,16 @@ pub struct Workspace {
 
 impl Workspace {
     pub async fn new(start_dir: impl AsRef<Path>) -> Result<Arc<Self>, std::io::Error> {
-        let mut current_dir = start_dir.as_ref().to_path_buf();
+        let mut current_dir = std::path::absolute(start_dir)?;
 
         loop {
             let module_bazel = current_dir.join("MODULE.bazel");
             let repo_bazel = current_dir.join("REPO.bazel");
 
-            let exists = try_select(
-                pin!(tokio::fs::try_exists(module_bazel)),
-                pin!(tokio::fs::try_exists(repo_bazel)),
-            )
-            .await
-            .map(|x| x.factor_first().0)
-            .unwrap_or(false);
+            let exists = tokio::fs::try_exists(module_bazel)
+                .or_else(|_| tokio::fs::try_exists(repo_bazel))
+                .await
+                .unwrap_or(false);
 
             if exists {
                 break;
@@ -43,7 +39,7 @@ impl Workspace {
             if !current_dir.pop() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "Could not find MODULE.bazel or REPO.bazel in parent directories",
+                    "Could not find MODULE.bazel or REPO.bazel in current or any parent directory",
                 ));
             }
         }
@@ -78,6 +74,7 @@ impl Workspace {
             .get(&MAIN_REPO)
             .expect("Main repo not found")
             .clone();
+
         // Avoid holding the lock while awaiting
         repo_future
             .await
