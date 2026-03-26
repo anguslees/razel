@@ -267,8 +267,6 @@ where
         )
     })?;
 
-
-
     // Evaluate the query!
     let mut result_stream = ast.inner.eval(&QueryContext::default());
 
@@ -369,7 +367,11 @@ mod tests {
         // Pure integers are not valid top-level expressions in Bazel queries.
         // Outside a function arg they are parsed as targets.
         assert_eq!(
-            parser().parse("7").into_result().expect("parse failed").inner,
+            parser()
+                .parse("7")
+                .into_result()
+                .expect("parse failed")
+                .inner,
             Expr::Target("7")
         );
     }
