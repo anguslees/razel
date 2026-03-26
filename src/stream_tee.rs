@@ -92,17 +92,18 @@ impl<S: Stream> Clone for StreamTee<S> {
 
 impl<S: Stream> Drop for StreamTee<S> {
     fn drop(&mut self) {
-        let mut state = self.shared.lock().expect("Mutex poisoned");
-        state.cursors.remove(&self.id);
-        state.wakers.remove(&self.id);
-        state.gc();
+        if let Ok(mut state) = self.shared.lock() {
+            state.cursors.remove(&self.id);
+            state.wakers.remove(&self.id);
+            state.gc();
 
-        // If we drop a consumer, it might have been the one whose Waker is currently
-        // registered with the underlying stream. To avoid stalling the remaining consumers
-        // that are waiting for new items, we wake them all up. They will re-poll and one
-        // of them will re-register its Waker with the underlying stream.
-        for (_, waker) in state.wakers.drain() {
-            waker.wake();
+            // If we drop a consumer, it might have been the one whose Waker is currently
+            // registered with the underlying stream. To avoid stalling the remaining consumers
+            // that are waiting for new items, we wake them all up. They will re-poll and one
+            // of them will re-register its Waker with the underlying stream.
+            for (_, waker) in state.wakers.drain() {
+                waker.wake();
+            }
         }
     }
 }
