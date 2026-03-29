@@ -2,9 +2,10 @@ use crate::bazel::label::{CanonicalRepo, MAIN_REPO};
 use crate::bazel::package::{BoxFileStore, DynFileStore};
 use crate::bazel::repo::{LocalFileStore, Repository};
 use crate::shared_error::SharedError;
-use futures::FutureExt;
 use futures::TryFutureExt;
 use futures::future::{BoxFuture, Shared};
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -19,20 +20,32 @@ pub struct Workspace {
     repositories: RwLock<HashMap<CanonicalRepo<'static>, RepositoryFuture>>,
 }
 
+async fn any_exists(file1: impl AsRef<Path>, file2: impl AsRef<Path>) -> std::io::Result<bool> {
+    let mut tasks = FuturesUnordered::new();
+    tasks.push(tokio::fs::try_exists(file1.as_ref()));
+    tasks.push(tokio::fs::try_exists(file2.as_ref()));
+
+    while let Some(res) = tasks.next().await {
+        match res {
+            Ok(true) => return Ok(true),
+            Ok(false) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(false)
+}
+
 impl Workspace {
     pub async fn new(start_dir: impl AsRef<Path>) -> Result<Arc<Self>, std::io::Error> {
         let mut current_dir = std::path::absolute(start_dir)?;
 
         loop {
-            let module_bazel = current_dir.join("MODULE.bazel");
-            let repo_bazel = current_dir.join("REPO.bazel");
-
-            let exists = tokio::fs::try_exists(module_bazel)
-                .or_else(|_| tokio::fs::try_exists(repo_bazel))
-                .await
-                .unwrap_or(false);
-
-            if exists {
+            if any_exists(
+                current_dir.join("MODULE.bazel"),
+                current_dir.join("REPO.bazel"),
+            )
+            .await?
+            {
                 break;
             }
 
