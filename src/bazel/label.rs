@@ -536,10 +536,8 @@ impl<'a, R> TargetPattern<'a, R> {
                     return false;
                 }
             }
-        } else {
-            if self.package != label.package {
-                return false;
-            }
+        } else if self.package != label.package {
+            return false;
         }
 
         match &self.target_kind {
