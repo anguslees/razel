@@ -366,17 +366,16 @@ struct RelativeLabel<'a> {
 
 type ParseError<'a> = Rich<'a, char>;
 
-fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, RelativeLabel<'a>, extra::Err<ParseError<'a>>>
+fn alphanumeric<'a>() -> impl chumsky::Parser<'a, &'a str, char, extra::Err<ParseError<'a>>> + Clone
 {
-    // See https://bazel.build/concepts/labels#labels-lexical-specification
-
-    let alphanumeric = any()
+    any()
         .filter(|c: &char| c.is_ascii_alphanumeric())
-        .labelled("alphanumeric");
+        .labelled("alphanumeric")
+}
 
-    // "Target names must be composed entirely of characters drawn from the set a–z, A–Z, 0–9, and the punctuation symbols !%-@^_"#$&'()*-+,;<=>?[]{|}~/.."
-    // Can't start or end with "/", also can't contain "." or ".." path segments.
-    let target = choice((one_of(r##"!%@^_"#$&'()*-+,;<=>?[]{|}~."##), alphanumeric))
+fn target_name_parser<'a>()
+-> impl chumsky::Parser<'a, &'a str, &'a str, extra::Err<ParseError<'a>>> + Clone {
+    choice((one_of(r##"!%@^_"#$&'()*-+,;<=>?[]{|}~."##), alphanumeric()))
         .labelled("valid target character")
         .repeated()
         .at_least(1)
@@ -390,9 +389,12 @@ fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, RelativeLabel<'a>, extra::E
         .separated_by(just('/'))
         .at_least(1)
         .to_slice()
-        .labelled("target name");
+        .labelled("target name")
+}
 
-    let package = choice((one_of(r##"! "#$%&'()*+,-.;<=>?@[]^_`{|}"##), alphanumeric))
+fn package_name_parser<'a>()
+-> impl chumsky::Parser<'a, &'a str, &'a str, extra::Err<ParseError<'a>>> + Clone {
+    choice((one_of(r##"! "#$%&'()*+,-.;<=>?@[]^_`{|}"##), alphanumeric()))
         .labelled("valid package character")
         .repeated()
         .at_least(1)
@@ -408,28 +410,40 @@ fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, RelativeLabel<'a>, extra::E
         })
         .separated_by(just('/'))
         .to_slice()
-        .labelled("package name");
+        .labelled("package name")
+}
 
-    let repo_name = choice((one_of(r##"+_.-"##), alphanumeric))
+fn repo_parser<'a>()
+-> impl chumsky::Parser<'a, &'a str, Repo<'a>, extra::Err<ParseError<'a>>> + Clone {
+    let repo_name = choice((one_of(r##"+_.-"##), alphanumeric()))
         .labelled("valid repo character")
         .repeated()
         .to_slice()
         .labelled("repository name");
 
-    let repo = choice((
+    choice((
         just("@@")
-            .ignore_then(repo_name)
+            .ignore_then(repo_name.clone())
             .map(|s: &str| Repo::Canonical(CanonicalRepo::new(s)))
             .labelled("canonical repo"),
         just('@')
             .ignore_then(repo_name)
             .map(|s: &str| Repo::Apparent(ApparentRepo::new(s)))
             .labelled("apparent repo"),
-    ));
+    ))
+}
+
+fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, RelativeLabel<'a>, extra::Err<ParseError<'a>>>
+{
+    // See https://bazel.build/concepts/labels#labels-lexical-specification
+
+    let target = target_name_parser();
+    let package = package_name_parser();
+    let repo = repo_parser();
 
     (repo.or_not())
         .then(just("//").ignore_then(package).map(Some::<&str>))
-        .then((just(':').ignore_then(target)).or_not())
+        .then((just(':').ignore_then(target.clone())).or_not())
         .map(|((r, p), t)| match ((r, p), t) {
             // Expand shorthand: @repo// -> @repo//:repo
             ((Some(repo), Some(pkg)), None) if pkg.is_empty() => {
@@ -482,6 +496,282 @@ where
         relative.package.unwrap_or_else(|| context.package.clone()),
         relative.target.unwrap_or_else(|| context.target.clone()),
     ))
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum TargetKind<'a> {
+    /// A specific target, e.g. `//foo:bar` or `//foo`
+    Exact(Cow<'a, str>),
+    /// All rules in a package, e.g. `//foo:all`
+    AllRules,
+    /// All targets in a package, e.g. `//foo:*`
+    AllTargets,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct TargetPattern<'a, R = Repo<'a>> {
+    pub repo: R,
+    pub package: Cow<'a, str>,
+    pub target_kind: TargetKind<'a>,
+    /// If true, this pattern includes all subpackages (the `/...` suffix).
+    pub include_subpackages: bool,
+}
+
+impl<'a, R> TargetPattern<'a, R> {
+    pub fn matches(&self, label: &Label<'a, R>) -> bool
+    where
+        R: PartialEq,
+    {
+        if self.repo != label.repo {
+            return false;
+        }
+
+        if self.include_subpackages {
+            if !self.package.is_empty() {
+                if !label.package.starts_with(self.package.as_ref()) {
+                    return false;
+                }
+                let remainder = &label.package[self.package.len()..];
+                if !remainder.is_empty() && !remainder.starts_with('/') {
+                    return false;
+                }
+            }
+        } else if self.package != label.package {
+            return false;
+        }
+
+        match &self.target_kind {
+            TargetKind::Exact(t) => t == &label.target,
+            TargetKind::AllRules | TargetKind::AllTargets => true,
+        }
+    }
+}
+
+#[derive(PartialEq, Debug)]
+struct RelativeTargetPattern<'a> {
+    repo: Option<Repo<'a>>,
+    package: Option<Cow<'a, str>>,
+    target_kind: TargetKind<'a>,
+    include_subpackages: bool,
+}
+
+#[allow(clippy::type_complexity)]
+fn target_pattern_parser<'a>()
+-> impl chumsky::Parser<'a, &'a str, RelativeTargetPattern<'a>, extra::Err<ParseError<'a>>> {
+    let repo = repo_parser();
+    let package = package_name_parser();
+    let target = target_name_parser();
+
+    #[derive(Clone)]
+    enum Suffix<'a> {
+        AllTargets,
+        AllRules,
+        Exact(&'a str),
+    }
+
+    let target_suffix = just(':').ignore_then(choice((
+        just('*').to(Suffix::AllTargets),
+        just("all").to(Suffix::AllRules),
+        target.map(Suffix::Exact),
+    )));
+
+    let package_pattern_parser =
+        choice((one_of(r##"! "#$%&'()*+,-.;<=>?@[]^_`{|}"##), alphanumeric()))
+            .labelled("valid package character")
+            .repeated()
+            .at_least(1)
+            .to_slice()
+            .validate(|x: &str, e, emitter| {
+                if x.chars().all(|c: char| c == '.') && x != "..." {
+                    emitter.emit(Rich::custom(
+                        e.span(),
+                        "Package can't include an all-dots segment except ...",
+                    ))
+                }
+                x
+            })
+            .separated_by(just('/'))
+            .to_slice()
+            .labelled("package name");
+
+    let pkg_segment = package_pattern_parser.map(|pkg: &str| {
+        if pkg.ends_with("/...") || pkg == "..." {
+            // Trim the '/...' or '...'
+            let trimmed = if pkg == "..." {
+                ""
+            } else {
+                pkg.strip_suffix("/...").unwrap()
+            };
+            (trimmed, true)
+        } else {
+            (pkg, false)
+        }
+    });
+
+    let double_slash_pkg = just("//")
+        .ignore_then(pkg_segment.clone().or_not())
+        .map(|pkg_opt| match pkg_opt {
+            Some((pkg, has_dots)) => (Some(pkg), has_dots),
+            None => (Some(""), false),
+        });
+
+    let single_slash_dots = just("...").to((Some(""), true));
+
+    (repo.or_not())
+        .then(
+            choice((
+                double_slash_pkg,
+                single_slash_dots,
+                pkg_segment.map(|(pkg, has_dots)| (Some(pkg), has_dots)),
+            ))
+            .or_not(),
+        )
+        .then(target_suffix.or_not())
+        .map(
+            |((r, p), t): (
+                (Option<Repo<'a>>, Option<(Option<&'a str>, bool)>),
+                Option<Suffix<'a>>,
+            )| {
+                let (pkg, include_subpackages) = match p {
+                    Some((pkg, has_dots)) => (pkg, has_dots),
+                    None => (None, false),
+                };
+
+                let target_kind = match (pkg, include_subpackages, t.as_ref()) {
+                    // If the target is explicitly specified
+                    (_, _, Some(Suffix::AllTargets)) => TargetKind::AllTargets,
+                    (_, _, Some(Suffix::AllRules)) => TargetKind::AllRules,
+                    (_, _, Some(Suffix::Exact(t))) => TargetKind::Exact(Cow::Borrowed(t)),
+
+                    // Defaults for exact shorthands like //foo/bar or @repo// or //foo/bar/...
+
+                    // If it ends in /... and no explicit target suffix is given, it means :all
+                    (_, true, None) => TargetKind::AllRules,
+
+                    // @repo// -> @repo//:repo
+                    (Some(""), false, None) if r.is_some() => {
+                        let name = r.clone().unwrap().into_name();
+                        TargetKind::Exact(name)
+                    }
+
+                    // //foo/bar -> //foo/bar:bar
+                    (Some(pkg), false, None) if !pkg.is_empty() => {
+                        let tgt = pkg.rsplit_once('/').map(|(_, tgt)| tgt).unwrap_or(pkg);
+                        TargetKind::Exact(Cow::Borrowed(tgt))
+                    }
+
+                    // Default relative
+                    (None, false, None) => TargetKind::Exact(Cow::Borrowed("")),
+                    (None, false, Some(Suffix::Exact(t))) => TargetKind::Exact(Cow::Borrowed(t)),
+                    (Some(""), false, None) => TargetKind::Exact(Cow::Borrowed("")),
+                    // If it parsed as a single string segment without : and it didn't match the other rules,
+                    // we treat it as an empty target for now, parse_target_pattern turns it into Exact(s).
+                    // Or rather, we output Exact("") so it doesn't fail, but parse_target_pattern overrides it.
+                    (Some(pkg), false, None) if !pkg.contains('/') => {
+                        TargetKind::Exact(Cow::Borrowed(""))
+                    }
+                    _ => TargetKind::Exact(Cow::Borrowed("")),
+                };
+
+                let mut final_pkg = pkg.map(Cow::Borrowed);
+                if p.is_none() && t.is_none() {
+                    // If there's no struct indicators (//, :), it could be something like "wiz" which parsed as a relative package.
+                    // It needs to be correctly identified as the target if it doesn't contain a slash, or package/target if it does.
+                    // However, since parse_target_pattern needs to know if it was a relative package vs relative target,
+                    // and our definition means "wiz" parses into `package` field, we just accept it here.
+                    // The `validation` below needs to NOT fail it if there's no slash and no target_kind explicitly set to something else.
+                }
+
+                RelativeTargetPattern {
+                    repo: r,
+                    package: final_pkg,
+                    target_kind,
+                    include_subpackages,
+                }
+            },
+        )
+        .validate(|rel_pattern: RelativeTargetPattern<'a>, e, emitter| {
+            if rel_pattern.repo.is_none()
+                && rel_pattern.package.is_none()
+                && rel_pattern.target_kind == TargetKind::Exact(Cow::Borrowed(""))
+            {
+                // empty pattern is invalid
+                emitter.emit(Rich::custom(e.span(), "invalid target pattern"));
+            }
+            rel_pattern
+        })
+        .labelled("target pattern")
+}
+
+/// Parses a target pattern string.
+pub fn parse_target_pattern<'a, R>(
+    s: &'a str,
+    context: &Label<'a, R>,
+) -> Result<TargetPattern<'a, Repo<'a>>, ParseError<'a>>
+where
+    for<'b> &'b R: Into<Repo<'a>>,
+{
+    let relative = target_pattern_parser()
+        .parse(s)
+        .into_result()
+        .map_err(|errs| errs.into_iter().next().unwrap())?;
+
+    let is_absolute = s.starts_with("//") || s.starts_with('@');
+
+    let package = if is_absolute {
+        relative.package.clone().unwrap_or(Cow::Borrowed(""))
+    } else {
+        match &relative.package {
+            Some(p) if context.package.is_empty() => p.clone(),
+            Some(p) => {
+                if relative.include_subpackages {
+                    // For "foo/...", it's a relative path to append to context package
+                    Cow::Owned(format!("{}/{}", context.package, p))
+                } else if !s.contains(':') && s != "..." {
+                    if p.contains('/') {
+                        // "foo/wiz"
+                        let last_slash = p.rfind('/').unwrap();
+                        Cow::Owned(format!("{}/{}", context.package, &p[..last_slash]))
+                    } else {
+                        // "wiz"
+                        context.package.clone()
+                    }
+                } else if p.is_empty() {
+                    context.package.clone()
+                } else {
+                    Cow::Owned(format!("{}/{}", context.package, p))
+                }
+            }
+            None => context.package.clone(),
+        }
+    };
+
+    let target_kind = match relative.target_kind {
+        // If the relative pattern didn't provide a target and resolved as empty, use context target
+        TargetKind::Exact(ref t) if t.is_empty() => TargetKind::Exact(context.target.clone()),
+        TargetKind::Exact(ref t)
+            if !is_absolute && !s.contains(':') && s != "..." && !s.ends_with("/...") =>
+        {
+            // It was a relative shorthand like "wiz" or "foo/wiz" but without a colon.
+            if let Some(ref rp) = relative.package {
+                let tgt = rp
+                    .rsplit_once('/')
+                    .map(|(_, tgt)| tgt)
+                    .unwrap_or(rp.as_ref());
+                TargetKind::Exact(Cow::Owned(tgt.to_string()))
+            } else {
+                TargetKind::Exact(Cow::Owned(s.to_string()))
+            }
+        }
+        other => other,
+    };
+
+    Ok(TargetPattern {
+        repo: relative.repo.unwrap_or_else(|| (&context.repo).into()),
+        package,
+        target_kind,
+        include_subpackages: relative.include_subpackages,
+    })
 }
 
 #[cfg(test)]
@@ -861,5 +1151,153 @@ mod tests {
             format!("{label:?}"),
             "Label(\"@@my_repo_canon//my/pkg:foo\")"
         );
+    }
+
+    // --- TargetPattern tests ---
+
+    #[test]
+    fn test_target_pattern_exact() {
+        let context = MAIN_REPO_ROOT.clone();
+        let pat = parse_target_pattern("//foo/bar:wiz", &context).unwrap();
+        assert_eq!(pat.repo, Repo::Canonical(MAIN_REPO));
+        assert_eq!(pat.package, "foo/bar");
+        assert_eq!(pat.target_kind, TargetKind::Exact(Cow::Borrowed("wiz")));
+        assert!(!pat.include_subpackages);
+
+        assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo/bar", "wiz")));
+        assert!(!pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo/bar", "wizzo")));
+        assert!(!pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo", "wiz")));
+    }
+
+    #[test]
+    fn test_target_pattern_shorthand_exact() {
+        let pat = parse_target_pattern("//foo/bar", &MAIN_REPO_ROOT).unwrap();
+        assert_eq!(pat.repo, Repo::Canonical(MAIN_REPO));
+        assert_eq!(pat.package, "foo/bar");
+        assert_eq!(pat.target_kind, TargetKind::Exact(Cow::Borrowed("bar")));
+        assert!(!pat.include_subpackages);
+    }
+
+    #[test]
+    fn test_target_pattern_all_rules() {
+        let pat = parse_target_pattern("//foo/bar:all", &MAIN_REPO_ROOT).unwrap();
+        assert_eq!(pat.package, "foo/bar");
+        assert_eq!(pat.target_kind, TargetKind::AllRules);
+        assert!(!pat.include_subpackages);
+
+        assert!(pat.matches(&Label::new(
+            Repo::Canonical(MAIN_REPO),
+            "foo/bar",
+            "any_target"
+        )));
+        assert!(!pat.matches(&Label::new(
+            Repo::Canonical(MAIN_REPO),
+            "foo/bar/baz",
+            "any_target"
+        )));
+    }
+
+    #[test]
+    fn test_target_pattern_all_targets() {
+        let pat = parse_target_pattern("//foo/bar:*", &MAIN_REPO_ROOT).unwrap();
+        assert_eq!(pat.package, "foo/bar");
+        assert_eq!(pat.target_kind, TargetKind::AllTargets);
+        assert!(!pat.include_subpackages);
+
+        assert!(pat.matches(&Label::new(
+            Repo::Canonical(MAIN_REPO),
+            "foo/bar",
+            "any_target"
+        )));
+        assert!(pat.matches(&Label::new(
+            Repo::Canonical(MAIN_REPO),
+            "foo/bar",
+            "file.txt"
+        )));
+    }
+
+    #[test]
+    fn test_target_pattern_rules_beneath() {
+        let pat = parse_target_pattern("//foo/...", &MAIN_REPO_ROOT).unwrap();
+        assert_eq!(pat.package, "foo");
+        assert_eq!(pat.target_kind, TargetKind::AllRules);
+        assert!(pat.include_subpackages);
+
+        assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo", "target")));
+        assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo/bar", "target")));
+        assert!(pat.matches(&Label::new(
+            Repo::Canonical(MAIN_REPO),
+            "foo/bar/baz",
+            "target"
+        )));
+        // ensure it handles prefix boundaries properly
+        assert!(!pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foobar", "target")));
+    }
+
+    #[test]
+    fn test_target_pattern_rules_beneath_root() {
+        let pat = parse_target_pattern("//...", &MAIN_REPO_ROOT).unwrap();
+        assert_eq!(pat.package, "");
+        assert_eq!(pat.target_kind, TargetKind::AllRules);
+        assert!(pat.include_subpackages);
+
+        assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "", "target")));
+        assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo", "target")));
+        assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo/bar", "target")));
+    }
+
+    #[test]
+    fn test_target_pattern_targets_beneath() {
+        let pat = parse_target_pattern("//foo/...:*", &MAIN_REPO_ROOT).unwrap();
+        assert_eq!(pat.package, "foo");
+        assert_eq!(pat.target_kind, TargetKind::AllTargets);
+        assert!(pat.include_subpackages);
+
+        assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo", "file.txt")));
+        assert!(pat.matches(&Label::new(
+            Repo::Canonical(MAIN_REPO),
+            "foo/bar",
+            "file.txt"
+        )));
+    }
+
+    #[test]
+    fn test_target_pattern_relative_beneath() {
+        let context = Label::new(Repo::Canonical(MAIN_REPO), "my/pkg", "a_target");
+        let pat = parse_target_pattern("foo/...", &context).unwrap();
+        assert_eq!(pat.package, "my/pkg/foo");
+        assert_eq!(pat.target_kind, TargetKind::AllRules); // the shorthand for ... expands to :all
+        assert!(pat.include_subpackages);
+
+        assert!(pat.matches(&Label::new(
+            Repo::Canonical(MAIN_REPO),
+            "my/pkg/foo",
+            "target"
+        )));
+        assert!(pat.matches(&Label::new(
+            Repo::Canonical(MAIN_REPO),
+            "my/pkg/foo/bar",
+            "target"
+        )));
+    }
+
+    #[test]
+    fn test_target_pattern_relative_exact() {
+        let context = Label::new(Repo::Canonical(MAIN_REPO), "my/pkg", "a_target");
+        let pat = parse_target_pattern(":wiz", &context).unwrap();
+        assert_eq!(pat.package, "my/pkg");
+        assert_eq!(pat.target_kind, TargetKind::Exact(Cow::Borrowed("wiz")));
+        assert!(!pat.include_subpackages);
+    }
+
+    #[test]
+    fn test_target_pattern_relative_implied() {
+        // Just providing "wiz" as a relative pattern in package "my/pkg"
+        let context = Label::new(Repo::Canonical(MAIN_REPO), "my/pkg", "a_target");
+        // By Bazel terminology, if there is no `:`, `wiz` in package `my/pkg` means `my/pkg:wiz`
+        let pat = parse_target_pattern("wiz", &context).unwrap();
+        assert_eq!(pat.package, "my/pkg");
+        assert_eq!(pat.target_kind, TargetKind::Exact(Cow::Borrowed("wiz")));
+        assert!(!pat.include_subpackages);
     }
 }
