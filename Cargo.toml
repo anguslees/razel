@@ -15,7 +15,7 @@ tokio = { version = "1", features = [
 ] }
 tonic = { version = "0.14", features = ["zstd", "tls-native-roots"] }
 fastrace = { version = "0.7", features = ["enable"] }
-starlark = "0.13"
+starlark = "0.14"
 allocative = "0.3"
 derive_more = { version = "2.0.0", features = ["display"] }
 clap = { version = "4", features = ["derive"] }
