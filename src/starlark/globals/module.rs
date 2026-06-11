@@ -118,9 +118,10 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
     /// https://bazel.build/rules/lib/globals/module#archive_override
     fn archive_override(
         module_name: &str,
-        #[starlark(kwargs)] _kwargs: Value,
+        #[starlark(kwargs)] kwargs: Value,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
+        let _ = kwargs;
         let mut bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module {
             bzl_module.archive_overrides.push(module_name.to_string());
@@ -139,6 +140,7 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(default = false)] dev_dependency: bool,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
+        let _ = max_compatibility_level;
         let mut bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module || (dev_dependency && !bzl_module.ignore_dev_dependency) {
             let repo_name = match repo_name {
@@ -168,6 +170,7 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(kwargs)] kwargs: Value,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
+        let _ = kwargs;
         let mut bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module {
             bzl_module.git_overrides.push(module_name.to_string());
@@ -191,7 +194,10 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(kwargs)] kwargs: SmallMap<&str, &str>,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
-        let mut bzl_module = ModuleExtra::from_eval(eval).builder();
+        let _ = extension_proxy;
+        let _ = args;
+        let _ = kwargs;
+        let bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module && !bzl_module.ignore_dev_dependency {
             todo!();
         }
@@ -205,7 +211,9 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         path: &str,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
-        let mut bzl_module = ModuleExtra::from_eval(eval).builder();
+        let _ = module_name;
+        let _ = path;
+        let bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module {
             todo!();
         }
@@ -215,11 +223,13 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
     fn module(
         #[starlark(default = String::from(""))] name: String,
         #[starlark(default = String::from(""))] version: String,
-        #[starlark(default = 0)] _compatibility_level: i32,
+        #[starlark(default = 0)] compatibility_level: i32,
         #[starlark(default = String::from(""))] repo_name: String,
-        #[starlark(default=UnpackList::default())] _bazel_compatibility: UnpackList<String>,
+        #[starlark(default=UnpackList::default())] bazel_compatibility: UnpackList<String>,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
+        let _ = compatibility_level;
+        let _ = bazel_compatibility;
         let mut bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.name.is_some() {
             return Err(starlark::Error::new_native(anyhow::anyhow!(
@@ -238,7 +248,10 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(default = "")] registry: &str,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
-        let mut bzl_module = ModuleExtra::from_eval(eval).builder();
+        let _ = module_name;
+        let _ = versions;
+        let _ = registry;
+        let bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module {
             todo!();
         }
@@ -251,7 +264,10 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(kwargs)] kwargs: SmallMap<&str, &str>,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
-        let mut bzl_module = ModuleExtra::from_eval(eval).builder();
+        let _ = extension_proxy;
+        let _ = args;
+        let _ = kwargs;
+        let bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module && !bzl_module.ignore_dev_dependency {
             todo!();
         }
@@ -263,7 +279,8 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(args)] platform_labels: UnpackTuple<&str>,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
-        let mut bzl_module = ModuleExtra::from_eval(eval).builder();
+        let _ = platform_labels;
+        let bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module || (dev_dependency && !bzl_module.ignore_dev_dependency) {
             todo!();
         }
@@ -275,7 +292,8 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(args)] toolchain_labels: UnpackTuple<&str>,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
-        let mut bzl_module = ModuleExtra::from_eval(eval).builder();
+        let _ = toolchain_labels;
+        let bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module || (dev_dependency && !bzl_module.ignore_dev_dependency) {
             todo!();
         }
@@ -291,7 +309,13 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(default = 0)] patch_strip: i32,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
-        let mut bzl_module = ModuleExtra::from_eval(eval).builder();
+        let _ = module_name;
+        let _ = version;
+        let _ = registry;
+        let _ = patches;
+        let _ = patch_cmds;
+        let _ = patch_strip;
+        let bzl_module = ModuleExtra::from_eval(eval).builder();
         if bzl_module.is_root_module {
             todo!();
         }
@@ -307,7 +331,9 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(default = false)] isolate: bool,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneOr<ModuleExtensionProxy>> {
-        let mut bzl_module = ModuleExtra::from_eval(eval).builder();
+        let _ = extension_bzl_file;
+        let _ = extension_name;
+        let bzl_module = ModuleExtra::from_eval(eval).builder();
         if !bzl_module.is_root_module && (!dev_dependency || bzl_module.ignore_dev_dependency) {
             // "usage of module extension is ignored"
             return Ok(NoneOr::None);
@@ -325,6 +351,10 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         #[starlark(kwargs)] kwargs: SmallMap<&str, &str>,
         eval: &mut Evaluator,
     ) -> starlark::Result<NoneType> {
+        let _ = extension_proxy;
+        let _ = args;
+        let _ = kwargs;
+        let _ = eval;
         todo!();
         Ok(NoneType)
     }
@@ -334,6 +364,9 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         repo_rule_name: &str,
         eval: &mut Evaluator,
     ) -> starlark::Result<RepoRuleProxy> {
+        let _ = repo_rule_bzl_file;
+        let _ = repo_rule_name;
+        let _ = eval;
         todo!();
         Ok(RepoRuleProxy {})
     }

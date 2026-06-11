@@ -131,14 +131,14 @@ async fn eval_module_include(
     let ast: AstModule =
         AstModule::parse(path, content, &DIALECT_MODULE).map_err(|e| e.into_anyhow())?;
 
-    let module = StarlarkModule::new();
-
-    {
+    StarlarkModule::with_temp_heap(|module| {
         let mut eval = Evaluator::new(&module);
         eval.extra = Some(&bzl_module);
         eval.eval_module(ast, &MODULE_GLOBALS)
             .map_err(|e| e.into_anyhow())?;
-    }
+        Ok::<_, anyhow::Error>(())
+    })?;
+
     println!("MODULE.bazel defined module name {bzl_module:?}");
 
     Ok(bzl_module.into_inner())
@@ -174,14 +174,13 @@ pub(crate) async fn eval_repo(path: &Path) -> anyhow::Result<Module> {
     let ast: AstModule =
         AstModule::parse_file(path, &DIALECT_MODULE).map_err(|e| e.into_anyhow())?;
 
-    let module = StarlarkModule::new();
-
-    {
+    StarlarkModule::with_temp_heap(|module| {
         let mut eval = Evaluator::new(&module);
         eval.extra = Some(&repo_bazel);
         eval.eval_module(ast, &REPO_GLOBALS)
             .map_err(|e| e.into_anyhow())?;
-    }
+        Ok::<_, anyhow::Error>(())
+    })?;
 
     todo!()
 }
