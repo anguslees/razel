@@ -134,10 +134,10 @@ async fn eval_module_include(
     StarlarkModule::with_temp_heap(|module| {
         let mut eval = Evaluator::new(&module);
         eval.extra = Some(&bzl_module);
-        eval.eval_module(ast, &MODULE_GLOBALS)
-            .map_err(|e| e.into_anyhow())?;
-        Ok::<_, anyhow::Error>(())
-    })?;
+        eval.eval_module(ast, &MODULE_GLOBALS)?;
+        Ok::<_, starlark::Error>(())
+    })
+    .map_err(|e| e.into_anyhow())?;
 
     println!("MODULE.bazel defined module name {bzl_module:?}");
 
@@ -177,10 +177,10 @@ pub(crate) async fn eval_repo(path: &Path) -> anyhow::Result<Module> {
     StarlarkModule::with_temp_heap(|module| {
         let mut eval = Evaluator::new(&module);
         eval.extra = Some(&repo_bazel);
-        eval.eval_module(ast, &REPO_GLOBALS)
-            .map_err(|e| e.into_anyhow())?;
-        Ok::<_, anyhow::Error>(())
-    })?;
+        eval.eval_module(ast, &REPO_GLOBALS)?;
+        Ok::<_, starlark::Error>(())
+    })
+    .map_err(|e| e.into_anyhow())?;
 
     todo!()
 }

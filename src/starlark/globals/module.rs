@@ -342,7 +342,6 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
             todo!()
         }
         todo!();
-        Ok(NoneOr::Other(ModuleExtensionProxy {}))
     }
 
     fn use_repo(
@@ -356,7 +355,6 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         let _ = kwargs;
         let _ = eval;
         todo!();
-        Ok(NoneType)
     }
 
     fn use_repo_rule(
@@ -368,7 +366,6 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         let _ = repo_rule_name;
         let _ = eval;
         todo!();
-        Ok(RepoRuleProxy {})
     }
 }
 
