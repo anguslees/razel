@@ -22,13 +22,31 @@ impl<F: FileStore> Package<F> {
         }
     }
 
-    pub fn sub_packages(&self) -> Vec<String> {
+    pub async fn subpackages(&self) -> impl Stream<Item = anyhow::Result<Package<F>>> {
         // TODO: Implement this
-        vec![]
+        futures::stream::once(futures::future::ready(Err(anyhow::anyhow!(
+            "Not implemented"
+        ))))
+    }
+
+    // TODO
+    // pub async fn targets(&self) -> impl Stream<Item = anyhow::Result<Target>> {
+    //     // TODO: Implement this
+    //     vec![]
+    // }
+
+    pub async fn source_files(&self) -> impl Stream<Item = anyhow::Result<String>> {
+        // TODO: Implement this
+        futures::stream::once(futures::future::ready(Err(anyhow::anyhow!(
+            "Not implemented"
+        ))))
     }
 }
 
-use futures::future::{BoxFuture, FutureExt};
+use futures::{
+    Stream,
+    future::{BoxFuture, FutureExt},
+};
 
 pub type BoxAsyncRead = Box<dyn io::AsyncRead + Unpin + Send>;
 pub type BoxFile<'a> = Box<DynFile<'a, BoxAsyncRead>>;

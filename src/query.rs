@@ -1,5 +1,5 @@
 use crate::bazel::Configuration;
-use crate::bazel::label::{Label, MAIN_REPO_ROOT, Repo, parse_label};
+use crate::bazel::label::{Label, MAIN_REPO_ROOT, Repo};
 use crate::stream_tee::{StreamTee, StreamTeeExt};
 use crate::workspace::Workspace;
 use chumsky::prelude::*;
@@ -16,13 +16,12 @@ pub type QueryStream<'a> = BoxStream<'a, QueryResult<'a>>;
 
 #[derive(Clone)]
 pub struct QueryContext<'a> {
-    #[allow(dead_code)]
-    pub workspace: &'a Workspace,
+    pub workspace: Arc<Workspace>,
     pub variables: HashMap<&'a str, StreamTee<QueryStream<'a>>>,
 }
 
 impl<'a> QueryContext<'a> {
-    pub fn new(workspace: &'a Workspace) -> Self {
+    pub fn new(workspace: Arc<Workspace>) -> Self {
         Self {
             workspace,
             variables: HashMap::new(),
@@ -183,12 +182,24 @@ pub fn parser<'a>() -> impl Parser<'a, &'a str, Spanned<Expr<'a>>, extra::Err<Ri
 impl<'a> Expr<'a> {
     pub fn eval(&self, ctx: &QueryContext<'a>) -> QueryStream<'a> {
         match self {
-            Expr::String(s) => {
-                // TODO: this should be interpreted as a pattern rather than just a single label
-                match parse_label(s, &MAIN_REPO_ROOT) {
-                    Ok(label) => stream::once(async move { Ok(label) }).boxed(),
-                    Err(e) => stream::once(async move { Err(e.to_string()) }).boxed(),
-                }
+            &Expr::String(s) => {
+                let ws = ctx.workspace.clone();
+                let fut = async move {
+                    match crate::bazel::label::parse_target_pattern(s, &MAIN_REPO_ROOT) {
+                        Ok(pattern) => {
+                            ws.expand_pattern(pattern)
+                                .map(|res| match res {
+                                    Ok(label) => Ok(label),
+                                    Err(e) => Err(e.to_string()),
+                                })
+                                .boxed()
+                        }
+                        Err(e) => {
+                            stream::once(async move { Err(e.to_string()) }).boxed()
+                        }
+                    }
+                };
+                stream::once(fut).flatten().boxed()
             }
             Expr::Int(_) => {
                 stream::once(async { Err("Int not supported out of function context".to_string()) })
@@ -280,7 +291,7 @@ where
     })?;
 
     // Evaluate the query!
-    let mut result_stream = ast.inner.eval(&QueryContext::new(&workspace));
+    let mut result_stream = ast.inner.eval(&QueryContext::new(workspace.clone()));
 
     while let Some(res) = result_stream.next().await {
         match res {
