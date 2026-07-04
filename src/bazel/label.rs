@@ -16,9 +16,11 @@ impl<'a> ApparentRepo<'a> {
     pub fn as_str(&self) -> &str {
         self.0.as_ref()
     }
-}
 
-impl<'a> ApparentRepo<'a> {
+    pub fn into_owned(self) -> ApparentRepo<'static> {
+        ApparentRepo(Cow::Owned(self.0.into_owned()))
+    }
+
     pub fn into_name(self) -> Cow<'a, str> {
         self.0
     }
@@ -48,9 +50,11 @@ impl<'a> CanonicalRepo<'a> {
     pub fn as_str(&self) -> &str {
         self.0.as_ref()
     }
-}
 
-impl<'a> CanonicalRepo<'a> {
+    pub fn into_owned(self) -> CanonicalRepo<'static> {
+        CanonicalRepo(Cow::Owned(self.0.into_owned()))
+    }
+
     pub fn into_name(self) -> Cow<'a, str> {
         self.0
     }
@@ -79,6 +83,13 @@ impl<'a> Repo<'a> {
         match self {
             Repo::Apparent(r) => r.into_name(),
             Repo::Canonical(r) => r.into_name(),
+        }
+    }
+
+    pub fn into_owned(self) -> Repo<'static> {
+        match self {
+            Repo::Apparent(r) => Repo::Apparent(r.into_owned()),
+            Repo::Canonical(r) => Repo::Canonical(r.into_owned()),
         }
     }
 }
@@ -223,6 +234,24 @@ impl<'a> ApparentLabel<'a> {
             target: self.target,
         })
     }
+
+    pub fn into_owned(self) -> ApparentLabel<'static> {
+        ApparentLabel {
+            repo: self.repo.into_owned(),
+            package: Cow::Owned(self.package.into_owned()),
+            target: Cow::Owned(self.target.into_owned()),
+        }
+    }
+}
+
+impl<'a> CanonicalLabel<'a> {
+    pub fn into_owned(self) -> CanonicalLabel<'static> {
+        CanonicalLabel {
+            repo: self.repo.into_owned(),
+            package: Cow::Owned(self.package.into_owned()),
+            target: Cow::Owned(self.target.into_owned()),
+        }
+    }
 }
 
 impl<'a> Label<'a, Repo<'a>> {
@@ -258,6 +287,14 @@ impl<'a> Label<'a, Repo<'a>> {
             package: self.package,
             target: self.target,
         })
+    }
+
+    pub fn into_owned(self) -> Label<'static, Repo<'static>> {
+        Label {
+            repo: self.repo.into_owned(),
+            package: Cow::Owned(self.package.into_owned()),
+            target: Cow::Owned(self.target.into_owned()),
+        }
     }
 }
 

@@ -86,19 +86,11 @@ pub async fn eval_bzl_recursive(
                         anyhow::anyhow!("Cannot resolve repo mapping for {:?}", load_str)
                     })?;
 
-                let canonical_load_static = crate::bazel::label::CanonicalLabel::new(
-                    crate::bazel::label::CanonicalRepo::new(
-                        canonical_load.repo.as_str().to_string(),
-                    ),
-                    canonical_load.package.to_string(),
-                    canonical_load.target.to_string(),
-                );
-
                 futures.push(
                     eval_bzl_recursive(
                         workspace_clone.clone(),
                         repo_clone.clone(),
-                        canonical_load_static,
+                        canonical_load.into_owned(),
                     )
                     .boxed(),
                 );
@@ -184,14 +176,8 @@ pub async fn eval_build(
             })
             .ok_or_else(|| anyhow::anyhow!("Cannot resolve repo mapping for {:?}", load_str))?;
 
-        let canonical_load_static = crate::bazel::label::CanonicalLabel::new(
-            crate::bazel::label::CanonicalRepo::new(canonical_load.repo.as_str().to_string()),
-            canonical_load.package.to_string(),
-            canonical_load.target.to_string(),
-        );
-
         futures.push(
-            eval_bzl_recursive(workspace.clone(), repo.clone(), canonical_load_static).boxed(),
+            eval_bzl_recursive(workspace.clone(), repo.clone(), canonical_load.into_owned()).boxed(),
         );
         module_ids.push(load_str.clone());
     }
