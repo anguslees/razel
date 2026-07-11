@@ -306,14 +306,12 @@ impl FileStore for InMemoryFileStore {
             for file_path_str in self.files.keys() {
                 if let Ok(stripped) = std::path::Path::new(file_path_str).strip_prefix(&dir_path) {
                     let mut components = stripped.components();
-                    if let Some(first) = components.next() {
-                        if let std::path::Component::Normal(name) = first {
-                            let name_str = name.to_string_lossy().into_owned();
-                            if components.next().is_some() {
-                                entries.insert(name_str, true);
-                            } else {
-                                entries.entry(name_str).or_insert(false);
-                            }
+                    if let Some(std::path::Component::Normal(name)) = components.next() {
+                        let name_str = name.to_string_lossy().into_owned();
+                        if components.next().is_some() {
+                            entries.insert(name_str, true);
+                        } else {
+                            entries.entry(name_str).or_insert(false);
                         }
                     }
                 }

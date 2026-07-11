@@ -81,15 +81,15 @@ impl<F: FileStore> Package<F> {
                 stack.extend(subdirs);
 
                 // If this directory has a BUILD file, yield it as a subpackage (skip if it's the root package itself)
-                if let Some(bf) = build_file_name {
-                    if current_dir != self.path {
-                        let build_path = if current_dir.is_empty() { bf.clone() } else { format!("{}/{}", current_dir, bf) };
-                        match self.filestore.read_file(&build_path).await {
-                            Ok(file) => {
-                                yield Package::new(current_dir, bf, self.filestore.clone(), file);
-                            }
-                            Err(e) => yield Err(anyhow::Error::from(e))?,
+                if let Some(bf) = build_file_name
+                    && current_dir != self.path
+                {
+                    let build_path = if current_dir.is_empty() { bf.clone() } else { format!("{}/{}", current_dir, bf) };
+                    match self.filestore.read_file(&build_path).await {
+                        Ok(file) => {
+                            yield Package::new(current_dir, bf, self.filestore.clone(), file);
                         }
+                        Err(e) => yield Err(anyhow::Error::from(e))?,
                     }
                 }
             }
