@@ -2,6 +2,7 @@ pub(crate) mod bzlmod;
 pub(crate) mod label;
 pub(crate) mod package;
 pub(crate) mod repo;
+pub(crate) mod rule;
 
 #[derive(Debug)]
 #[allow(dead_code)]

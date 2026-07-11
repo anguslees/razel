@@ -1,16 +1,19 @@
-use crate::bazel::label::{CanonicalRepo, MAIN_REPO};
+use crate::bazel::label::{CanonicalRepo, Label, MAIN_REPO, Repo, TargetPattern};
 use crate::bazel::package::{BoxFileStore, DynFileStore};
 use crate::bazel::repo::{LocalFileStore, Repository};
 use crate::shared_error::SharedError;
 use futures::TryFutureExt;
 use futures::future::{BoxFuture, Shared};
-use futures::stream::FuturesUnordered;
+use futures::stream::{FuturesUnordered, Stream};
 use futures::{FutureExt, StreamExt};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use starlark::environment::FrozenModule;
+
 type RepositoryFuture = Shared<BoxFuture<'static, Result<Arc<Repository<'static>>, SharedError>>>;
+type FrozenModuleFuture = Shared<BoxFuture<'static, Result<FrozenModule, SharedError>>>;
 
 /// The environment shared by all Bazel commands run in the same main repository. It encompasses the main repo and the set of all defined external repos.
 ///
@@ -18,6 +21,7 @@ type RepositoryFuture = Shared<BoxFuture<'static, Result<Arc<Repository<'static>
 pub struct Workspace {
     path: PathBuf,
     repositories: RwLock<HashMap<CanonicalRepo<'static>, RepositoryFuture>>,
+    loaded_deps: RwLock<HashMap<crate::bazel::label::CanonicalLabel<'static>, FrozenModuleFuture>>,
 }
 
 async fn any_exists(file1: impl AsRef<Path>, file2: impl AsRef<Path>) -> std::io::Result<bool> {
@@ -60,6 +64,7 @@ impl Workspace {
         let ws = Arc::new(Workspace {
             path: current_dir.clone(),
             repositories: RwLock::new(HashMap::new()),
+            loaded_deps: RwLock::new(HashMap::new()),
         });
 
         // Create the main repository
@@ -110,5 +115,84 @@ impl Workspace {
             .write()
             .unwrap()
             .insert(repo, f.boxed().shared());
+    }
+
+    pub fn get_or_add_bzl<Fut>(
+        &self,
+        label: crate::bazel::label::CanonicalLabel<'static>,
+        f: impl FnOnce() -> Fut,
+    ) -> FrozenModuleFuture
+    where
+        Fut: IntoFuture<Output = Result<FrozenModule, anyhow::Error>>,
+        Fut::IntoFuture: Send + 'static,
+    {
+        // First, check with read lock
+        if let Some(future) = self.loaded_deps.read().unwrap().get(&label) {
+            return future.clone();
+        }
+
+        // Retry with write lock and insert if still absent
+        let mut deps = self.loaded_deps.write().unwrap();
+        if let Some(future) = deps.get(&label) {
+            return future.clone();
+        }
+
+        let future = f()
+            .into_future()
+            .map_err(SharedError::from)
+            .boxed()
+            .shared();
+        deps.insert(label, future.clone());
+        future
+    }
+
+    /// Expand pattern into a stream of Labels
+    pub fn expand_pattern<'a>(
+        self: &Arc<Self>,
+        pattern: TargetPattern<'a>,
+    ) -> impl Stream<Item = anyhow::Result<Label<'a>>> + 'a {
+        let ws = self.clone();
+
+        let labels_stream = async_stream::try_stream! {
+            let repo = ws.main_repo().await?;
+
+            let package_path = pattern.package.as_ref();
+            let root_pkg = repo.read_package(package_path).await?;
+
+            // Evaluate the root package
+            let rules = repo.eval_package(&root_pkg, ws.clone()).await?;
+            for rule_name in rules.into_keys() {
+                let label: Label<'a> = Label::new(
+                    Repo::Canonical(repo.canonical_name()),
+                    root_pkg.path.clone(),
+                    rule_name,
+                );
+
+                if pattern.matches(&label) {
+                    yield label;
+                }
+            }
+
+            if pattern.include_subpackages {
+                let mut subpackages = root_pkg.subpackages();
+                while let Some(pkg) = subpackages.next().await {
+                    let pkg = pkg?;
+                    let rules = repo.eval_package(&pkg, ws.clone()).await?;
+                    for rule_name in rules.into_keys() {
+                        let label: Label<'a> = Label::new(
+                            Repo::Canonical(repo.canonical_name()),
+                            pkg.path.clone(),
+                            rule_name,
+                        );
+
+                        if pattern.matches(&label) {
+                            yield label;
+                        }
+                    }
+                }
+            }
+        };
+
+        labels_stream
     }
 }
