@@ -51,6 +51,10 @@ impl<'a> CanonicalRepo<'a> {
         self.0.as_ref()
     }
 
+    pub fn as_borrowed(&self) -> CanonicalRepo<'_> {
+        CanonicalRepo(Cow::Borrowed(self.0.as_ref()))
+    }
+
     pub fn into_owned(self) -> CanonicalRepo<'static> {
         CanonicalRepo(Cow::Owned(self.0.into_owned()))
     }

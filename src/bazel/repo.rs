@@ -4,9 +4,10 @@ use futures::future::{BoxFuture, FusedFuture, FutureExt};
 
 use crate::{
     bazel::{
-        label::{ApparentRepo, CanonicalRepo, MAIN_REPO},
+        label::{ApparentRepo, CanonicalLabel, CanonicalRepo, Label, MAIN_REPO},
         package::{
-            BoxFile, BoxFileStore, Digest, DigestFunction, DynFileStore, File, FileStore, Package,
+            BoxFile, BoxFileStore, Digest, DigestFunction, DirEntry, DynFileStore, File, FileStore,
+            Package,
         },
     },
     workspace::Workspace,
@@ -79,6 +80,27 @@ impl<'a> Repository<'a> {
         self.canonical_name.clone()
     }
 
+    /// Resolves an apparent repository name in this repository's mapping.
+    pub fn resolve_repo<'repo>(
+        &'repo self,
+        apparent: &ApparentRepo<'repo>,
+    ) -> Option<CanonicalRepo<'repo>>
+    where
+        'a: 'repo,
+    {
+        self.repo_mapping
+            .get(apparent)
+            .map(CanonicalRepo::as_borrowed)
+    }
+
+    /// Resolves the apparent repository portion of a label in this repository's mapping.
+    pub fn resolve_label<'repo>(&'repo self, label: Label<'repo>) -> Option<CanonicalLabel<'repo>>
+    where
+        'a: 'repo,
+    {
+        label.into_canonical(|apparent| self.resolve_repo(apparent))
+    }
+
     pub fn files(&self) -> &BoxFileStore<'a> {
         &self.files
     }
@@ -89,8 +111,16 @@ impl<'a> Repository<'a> {
     ) -> Result<Package<BoxFileStore<'a>>, std::io::Error> {
         // Bazel looks for BUILD.bazel first, then BUILD. It's an error if both exist.
         // We read both in parallel to maximize performance.
-        let build_bazel_path = format!("{pkg}/BUILD.bazel");
-        let build_path = format!("{pkg}/BUILD");
+        let build_bazel_path = if pkg.is_empty() {
+            "BUILD.bazel".to_string()
+        } else {
+            format!("{pkg}/BUILD.bazel")
+        };
+        let build_path = if pkg.is_empty() {
+            "BUILD".to_string()
+        } else {
+            format!("{pkg}/BUILD")
+        };
 
         let (build_bazel_result, build_result) = tokio::join!(
             self.read_file(&build_bazel_path),
@@ -99,13 +129,19 @@ impl<'a> Repository<'a> {
 
         match (build_bazel_result, build_result) {
             // Success case 1: BUILD.bazel exists, BUILD does not.
-            (Ok(file), Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Package::new(self.files.clone(), file))
-            }
+            (Ok(file), Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(Package::new(
+                pkg.to_string(),
+                "BUILD.bazel".to_string(),
+                self.files.clone(),
+                file,
+            )),
             // Success case 2: BUILD.bazel does not exist, BUILD does.
-            (Err(e), Ok(file)) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Package::new(self.files.clone(), file))
-            }
+            (Err(e), Ok(file)) if e.kind() == std::io::ErrorKind::NotFound => Ok(Package::new(
+                pkg.to_string(),
+                "BUILD".to_string(),
+                self.files.clone(),
+                file,
+            )),
             // Error case 1: Both exist.
             (Ok(_), Ok(_)) => Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
@@ -132,8 +168,25 @@ impl<'a> Repository<'a> {
         self.files.read_file(path).await
     }
 
-    pub async fn read_dir(&self, path: &str) -> Result<Vec<String>, std::io::Error> {
+    pub async fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, std::io::Error> {
         self.files.read_dir(path).await
+    }
+
+    pub async fn eval_package(
+        self: &std::sync::Arc<Self>,
+        pkg: &Package<BoxFileStore<'a>>,
+        workspace: std::sync::Arc<Workspace>,
+    ) -> anyhow::Result<HashMap<String, crate::bazel::rule::Rule>>
+    where
+        'a: 'static,
+    {
+        let build_path = if pkg.path.is_empty() {
+            pkg.build_file_name.clone()
+        } else {
+            format!("{}/{}", pkg.path, pkg.build_file_name)
+        };
+
+        crate::starlark::eval::eval_build(workspace, self.clone(), &build_path).await
     }
 }
 
@@ -167,14 +220,19 @@ impl FileStore for LocalFileStore {
         .boxed()
     }
 
-    fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<String>, std::io::Error>> {
+    fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<DirEntry>, std::io::Error>> {
         let full_path = self.root.join(path);
         async move {
             let mut read_dir = fs::read_dir(full_path).await?;
             let mut results = Vec::new();
 
             while let Some(entry) = read_dir.next_entry().await? {
-                results.push(entry.file_name().to_string_lossy().to_string());
+                let name = entry.file_name().to_string_lossy().to_string();
+                if entry.file_type().await?.is_dir() {
+                    results.push(DirEntry::Directory(name));
+                } else {
+                    results.push(DirEntry::File(name));
+                }
             }
 
             Ok(results)
@@ -241,26 +299,35 @@ impl FileStore for InMemoryFileStore {
         .boxed()
     }
 
-    fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<String>, std::io::Error>> {
+    fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<DirEntry>, std::io::Error>> {
         let dir_path = std::path::PathBuf::from(path);
         async move {
-            let results: HashSet<_> = self
-                .files
-                .keys()
-                .filter_map(|file_path_str| {
-                    std::path::Path::new(file_path_str)
-                        .strip_prefix(&dir_path)
-                        .ok()
-                        .and_then(|p| p.components().next())
-                        .and_then(|c| match c {
-                            std::path::Component::Normal(name) => {
-                                Some(name.to_string_lossy().into_owned())
+            let mut entries = HashMap::new();
+            for file_path_str in self.files.keys() {
+                if let Ok(stripped) = std::path::Path::new(file_path_str).strip_prefix(&dir_path) {
+                    let mut components = stripped.components();
+                    if let Some(first) = components.next() {
+                        if let std::path::Component::Normal(name) = first {
+                            let name_str = name.to_string_lossy().into_owned();
+                            if components.next().is_some() {
+                                entries.insert(name_str, true);
+                            } else {
+                                entries.entry(name_str).or_insert(false);
                             }
-                            _ => None,
-                        })
+                        }
+                    }
+                }
+            }
+            Ok(entries
+                .into_iter()
+                .map(|(name, is_directory)| {
+                    if is_directory {
+                        DirEntry::Directory(name)
+                    } else {
+                        DirEntry::File(name)
+                    }
                 })
-                .collect();
-            Ok(results.into_iter().collect())
+                .collect())
         }
         .boxed()
     }
@@ -290,8 +357,59 @@ impl File for InMemoryFile {
 #[cfg(test)]
 pub mod test {
     use super::*;
+    use crate::bazel::label::Repo;
     use std::collections::HashMap;
     use tokio::io::{self};
+
+    #[test]
+    fn test_resolve_repo_and_label() {
+        let files: BoxFileStore<'static> = std::sync::Arc::from(DynFileStore::new_box(Box::new(
+            crate::bazel::package::TypeErasingFileStore(InMemoryFileStore::new(HashMap::new())),
+        )));
+        let canonical_dep = CanonicalRepo::new(String::from("dep+1.0"));
+        let repo = Repository {
+            repo_name: ApparentRepo::new("root"),
+            canonical_name: MAIN_REPO,
+            repo_mapping: HashMap::from([(ApparentRepo::new("dep_alias"), canonical_dep.clone())]),
+            files,
+        };
+
+        let apparent_name = String::from("dep_alias");
+        let stored = repo.repo_mapping.values().next().unwrap();
+        let resolved = repo
+            .resolve_repo(&ApparentRepo::new(apparent_name.as_str()))
+            .unwrap();
+        assert_eq!(resolved, canonical_dep);
+        assert!(std::ptr::eq(resolved.as_str(), stored.as_str()));
+        assert_eq!(repo.resolve_repo(&ApparentRepo::new("unknown")), None);
+
+        let apparent_label = Label::new(
+            Repo::Apparent(ApparentRepo::new(apparent_name.as_str())),
+            "package",
+            "target",
+        );
+        let resolved_label = repo.resolve_label(apparent_label).unwrap();
+        assert_eq!(resolved_label.repo, canonical_dep);
+        assert_eq!(resolved_label.package, "package");
+        assert_eq!(resolved_label.target, "target");
+
+        let canonical_label = Label::new(
+            Repo::Canonical(CanonicalRepo::new("already_canonical")),
+            "package",
+            "target",
+        );
+        assert_eq!(
+            repo.resolve_label(canonical_label).unwrap().repo,
+            CanonicalRepo::new("already_canonical")
+        );
+
+        let unknown_label = Label::new(
+            Repo::Apparent(ApparentRepo::new("unknown")),
+            "package",
+            "target",
+        );
+        assert!(repo.resolve_label(unknown_label).is_none());
+    }
 
     #[tokio::test]
     async fn test_in_memory_file_store_read_dir() {
@@ -305,19 +423,46 @@ pub mod test {
         let store = InMemoryFileStore::new(files);
 
         // Test root directory
-        let mut root_entries = store.read_dir("").await.unwrap();
+        let mut root_entries: Vec<String> = store
+            .read_dir("")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| match e {
+                DirEntry::File(s) => s,
+                DirEntry::Directory(s) => s,
+            })
+            .collect();
         root_entries.sort();
         assert_eq!(root_entries, vec!["a", "f"]);
 
         // Test subdirectory "a" (with and without trailing slash)
         for path in ["a", "a/"] {
-            let mut entries = store.read_dir(path).await.unwrap();
+            let mut entries: Vec<String> = store
+                .read_dir(path)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|e| match e {
+                    DirEntry::File(s) => s,
+                    DirEntry::Directory(s) => s,
+                })
+                .collect();
             entries.sort();
             assert_eq!(entries, vec!["b", "c", "d"], "Failed for path: {path}");
         }
 
         // Test deeper subdirectory "a/d"
-        let mut ad_entries = store.read_dir("a/d").await.unwrap();
+        let mut ad_entries: Vec<String> = store
+            .read_dir("a/d")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| match e {
+                DirEntry::File(s) => s,
+                DirEntry::Directory(s) => s,
+            })
+            .collect();
         ad_entries.sort();
         assert_eq!(ad_entries, vec!["e"]);
 

@@ -153,116 +153,46 @@ impl Workspace {
     ) -> impl Stream<Item = anyhow::Result<Label<'a>>> + 'a {
         let ws = self.clone();
 
-        let fut = async move {
-            let repo = match ws.main_repo().await {
-                Ok(r) => r,
-                Err(e) => return futures::stream::once(async move { Err(e) }).boxed(),
-            };
+        let labels_stream = async_stream::try_stream! {
+            let repo = ws.main_repo().await?;
 
-            let mut packages = Vec::new();
-            let base_dir = ws.path.clone();
-            if let Err(e) = walk_packages(base_dir.clone(), base_dir.clone(), &mut packages).await {
-                return futures::stream::once(async move { Err(anyhow::Error::from(e)) }).boxed();
+            let package_path = pattern.package.as_ref();
+            let root_pkg = repo.read_package(package_path).await?;
+
+            // Evaluate the root package
+            let rules = repo.eval_package(&root_pkg, ws.clone()).await?;
+            for rule_name in rules.into_keys() {
+                let label: Label<'a> = Label::new(
+                    Repo::Canonical(repo.canonical_name()),
+                    root_pkg.path.clone(),
+                    rule_name,
+                );
+
+                if pattern.matches(&label) {
+                    yield label;
+                }
             }
 
-            let packages_stream = futures::stream::iter(packages);
-            
-            let labels_stream = packages_stream.then(move |pkg| {
-                let ws_clone = ws.clone();
-                let repo_clone = repo.clone();
-                let pattern_clone = pattern.clone();
-                let base_dir_clone = base_dir.clone();
-                
-                async move {
-                    let build_path = if pkg.is_empty() {
-                        if tokio::fs::try_exists(base_dir_clone.join("BUILD.bazel")).await.unwrap_or(false) {
-                            "BUILD.bazel".to_string()
-                        } else {
-                            "BUILD".to_string()
-                        }
-                    } else {
-                        if tokio::fs::try_exists(base_dir_clone.join(&pkg).join("BUILD.bazel")).await.unwrap_or(false) {
-                            format!("{}/BUILD.bazel", pkg)
-                        } else {
-                            format!("{}/BUILD", pkg)
-                        }
-                    };
+            if pattern.include_subpackages {
+                let mut subpackages = root_pkg.subpackages();
+                while let Some(pkg) = subpackages.next().await {
+                    let pkg = pkg?;
+                    let rules = repo.eval_package(&pkg, ws.clone()).await?;
+                    for rule_name in rules.into_keys() {
+                        let label: Label<'a> = Label::new(
+                            Repo::Canonical(repo.canonical_name()),
+                            pkg.path.clone(),
+                            rule_name,
+                        );
 
-                    match crate::starlark::eval::eval_build(ws_clone, repo_clone.clone(), &build_path).await {
-                        Ok(rules) => {
-                            let mut matched = Vec::new();
-                            for rule_name in rules.keys() {
-                                let static_label = Label::new(
-                                    Repo::Canonical(repo_clone.canonical_name()),
-                                    pkg.clone(),
-                                    rule_name.clone(),
-                                );
-                                // Convert to 'a lifetime
-                                let label_a = {
-                                    let repo_a = match static_label.repo {
-                                        Repo::Apparent(r) => Repo::Apparent(crate::bazel::label::ApparentRepo::new(r.into_name())),
-                                        Repo::Canonical(r) => Repo::Canonical(crate::bazel::label::CanonicalRepo::new(r.into_name())),
-                                    };
-                                    Label::new(
-                                        repo_a,
-                                        static_label.package.into_owned(),
-                                        static_label.target.into_owned(),
-                                    )
-                                };
-
-                                if pattern_clone.matches(&label_a) {
-                                    matched.push(Ok(label_a));
-                                }
-                            }
-                            futures::stream::iter(matched).boxed()
+                        if pattern.matches(&label) {
+                            yield label;
                         }
-                        Err(e) => futures::stream::once(async move { Err(e) }).boxed(),
                     }
                 }
-            }).flatten();
-            
-            labels_stream.boxed()
+            }
         };
 
-        futures::stream::once(fut).flatten()
+        labels_stream
     }
-}
-
-#[async_recursion::async_recursion]
-async fn walk_packages(
-    dir: PathBuf,
-    base_dir: PathBuf,
-    packages: &mut Vec<String>,
-) -> anyhow::Result<()> {
-    let mut read_dir = tokio::fs::read_dir(&dir).await?;
-    let mut has_build = false;
-    let mut subdirs = Vec::new();
-
-    while let Some(entry) = read_dir.next_entry().await? {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') || name_str == "target" || name_str.starts_with("bazel-") {
-            continue;
-        }
-
-        let file_type = entry.file_type().await?;
-        if file_type.is_dir() {
-            subdirs.push(entry.path());
-        } else if file_type.is_file() {
-            if name_str == "BUILD" || name_str == "BUILD.bazel" {
-                has_build = true;
-            }
-        }
-    }
-
-    if has_build {
-        let rel_path = dir.strip_prefix(&base_dir)?;
-        packages.push(rel_path.to_string_lossy().into_owned());
-    }
-
-    for subdir in subdirs {
-        walk_packages(subdir, base_dir.clone(), packages).await?;
-    }
-
-    Ok(())
 }

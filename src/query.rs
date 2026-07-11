@@ -186,17 +186,14 @@ impl<'a> Expr<'a> {
                 let ws = ctx.workspace.clone();
                 let fut = async move {
                     match crate::bazel::label::parse_target_pattern(s, &MAIN_REPO_ROOT) {
-                        Ok(pattern) => {
-                            ws.expand_pattern(pattern)
-                                .map(|res| match res {
-                                    Ok(label) => Ok(label),
-                                    Err(e) => Err(e.to_string()),
-                                })
-                                .boxed()
-                        }
-                        Err(e) => {
-                            stream::once(async move { Err(e.to_string()) }).boxed()
-                        }
+                        Ok(pattern) => ws
+                            .expand_pattern(pattern)
+                            .map(|res| match res {
+                                Ok(label) => Ok(label),
+                                Err(e) => Err(e.to_string()),
+                            })
+                            .boxed(),
+                        Err(e) => stream::once(async move { Err(e.to_string()) }).boxed(),
                     }
                 };
                 stream::once(fut).flatten().boxed()

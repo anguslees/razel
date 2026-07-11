@@ -76,15 +76,9 @@ pub async fn eval_bzl_recursive(
             for load_str in &loads {
                 let load_label = crate::bazel::label::parse_label(load_str, &label_clone)
                     .map_err(|e| anyhow::anyhow!("Failed to parse label: {:?}", e.to_string()))?;
-                let canonical_load = load_label
-                    .into_canonical(|r| {
-                        Some(crate::bazel::label::CanonicalRepo::new(
-                            r.as_str().to_string(),
-                        ))
-                    })
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Cannot resolve repo mapping for {:?}", load_str)
-                    })?;
+                let canonical_load = repo_clone.resolve_label(load_label).ok_or_else(|| {
+                    anyhow::anyhow!("Cannot resolve repo mapping for {:?}", load_str)
+                })?;
 
                 futures.push(
                     eval_bzl_recursive(
@@ -167,17 +161,13 @@ pub async fn eval_build(
     for load_str in &loads {
         let load_label = crate::bazel::label::parse_label(load_str, &context_label)
             .map_err(|e| anyhow::anyhow!("Failed to parse label: {:?}", e.to_string()))?;
-        let canonical_load = load_label
-            .into_canonical(|r| {
-                // TODO: use proper apparent repo resolution from the Repository
-                Some(crate::bazel::label::CanonicalRepo::new(
-                    r.as_str().to_string(),
-                ))
-            })
+        let canonical_load = repo
+            .resolve_label(load_label)
             .ok_or_else(|| anyhow::anyhow!("Cannot resolve repo mapping for {:?}", load_str))?;
 
         futures.push(
-            eval_bzl_recursive(workspace.clone(), repo.clone(), canonical_load.into_owned()).boxed(),
+            eval_bzl_recursive(workspace.clone(), repo.clone(), canonical_load.into_owned())
+                .boxed(),
         );
         module_ids.push(load_str.clone());
     }
