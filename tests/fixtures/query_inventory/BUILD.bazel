@@ -1,0 +1,48 @@
+load(":defs.bzl", "inventory_rule")
+
+package(
+    default_visibility = ["//visibility:public"],
+    default_testonly = True,
+    default_deprecation = "fixture only",
+    default_package_metadata = ["//metadata:package"],
+    features = ["fixture_feature"],
+)
+
+exports_files(["exported.txt"])
+
+filegroup(name = "condition")
+
+inventory_rule(
+    name = "custom",
+    srcs = ["missing_a.txt"] + select({
+        ":condition": ["missing_b.txt"],
+        "//conditions:default": ["missing_default.txt"],
+    }) + ["missing_c.txt"],
+    out = "custom.out",
+    message = "prefix " + select({
+        ":scalar_condition": "selected",
+        "//conditions:default": None,
+    }) + " suffix",
+)
+
+filegroup(
+    name = "group",
+    srcs = [":custom.out"],
+)
+
+genrule(
+    name = "consume",
+    srcs = [":custom.out"],
+    outs = ["final.out"],
+    cmd = "cp $< $@",
+)
+
+filegroup(
+    name = "cycle_a",
+    srcs = [":cycle_b"],
+)
+
+filegroup(
+    name = "cycle_b",
+    srcs = [":cycle_a"],
+)

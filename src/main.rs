@@ -1,4 +1,5 @@
-use crate::bazel::Configuration;
+use crate::bazel::InvocationOptions;
+use crate::query::QueryOutput;
 use clap::{Parser, Subcommand};
 use fastrace::collector::ConsoleReporter;
 use std::sync::Arc;
@@ -44,13 +45,35 @@ pub enum Commands {
     /// Runs the specified target
     Run { target: String },
     /// Queries for information about the build graph
-    Query { query: String },
+    Query {
+        #[arg(long, value_enum, default_value_t = QueryOutput::Label)]
+        output: QueryOutput,
+        query: String,
+    },
 }
 
 #[test]
 fn verify_cli() {
     use clap::CommandFactory;
     Cli::command().debug_assert();
+
+    let cli = Cli::try_parse_from(["razel", "query", "//:all"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query {
+            output: QueryOutput::Label,
+            ..
+        }
+    ));
+
+    let cli = Cli::try_parse_from(["razel", "query", "--output=label_kind", "//:all"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query {
+            output: QueryOutput::LabelKind,
+            ..
+        }
+    ));
 }
 
 #[tokio::main]
@@ -59,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let config = Arc::new(Configuration::from_flags(&cli));
+    let options = Arc::new(InvocationOptions::from_flags(&cli));
 
     fastrace::set_reporter(ConsoleReporter, fastrace::collector::Config::default());
 
@@ -88,8 +111,11 @@ async fn main() -> anyhow::Result<()> {
             println!("Running target: {target}");
             unimplemented!("Run command is not yet implemented.");
         }
-        Commands::Query { query: query_str } => {
-            query::query(&mut stdout, config, query_str).await?;
+        Commands::Query {
+            output,
+            query: query_str,
+        } => {
+            query::query(&mut stdout, options, *output, query_str).await?;
         }
     }
 

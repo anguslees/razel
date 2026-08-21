@@ -1,0 +1,1 @@
+module(name = "query_inventory", version = "1.0")

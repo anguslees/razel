@@ -1,3 +1,6 @@
+use crate::bazel::label::CanonicalLabel;
+use crate::bazel::repo::Repository;
+use crate::starlark::rule::{add_attr_namespace, add_context_globals, bzl_rule_globals};
 use starlark::collections::SmallMap;
 use starlark::environment::GlobalsBuilder;
 use starlark::eval::Evaluator;
@@ -5,23 +8,20 @@ use starlark::starlark_module;
 use starlark::values::Value;
 use starlark::values::none::NoneType;
 
-pub(crate) fn bzl_globals_builder() -> GlobalsBuilder {
-    let mut b = GlobalsBuilder::standard();
-    bzl_globals(&mut b);
-    b
+pub(crate) fn bzl_globals_builder(
+    repository: &Repository<'static>,
+    context: &CanonicalLabel<'_>,
+) -> GlobalsBuilder {
+    let mut builder = GlobalsBuilder::standard();
+    add_context_globals(&mut builder, repository, context);
+    add_attr_namespace(&mut builder);
+    bzl_rule_globals(&mut builder);
+    unsupported_globals(&mut builder);
+    builder
 }
 
 #[starlark_module]
-pub(crate) fn bzl_globals(builder: &mut GlobalsBuilder) {
-    fn rule(
-        #[starlark(kwargs)] _kwargs: SmallMap<&str, Value>,
-        _eval: &mut Evaluator,
-    ) -> starlark::Result<NoneType> {
-        Err(starlark::Error::new_native(anyhow::anyhow!(
-            "rule() unimplemented"
-        )))
-    }
-
+fn unsupported_globals(builder: &mut GlobalsBuilder) {
     fn provider(
         #[starlark(kwargs)] _kwargs: SmallMap<&str, Value>,
         _eval: &mut Evaluator,

@@ -1,0 +1,4 @@
+filegroup(
+    name = "nested_group",
+    srcs = ["missing_nested.txt"],
+)

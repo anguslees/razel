@@ -1,0 +1,1 @@
+module(name = "recursive_prefix", version = "1.0")

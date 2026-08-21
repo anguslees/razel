@@ -84,8 +84,9 @@ pub(crate) async fn eval_module(
     files: &BoxFileStore<'static>,
     path: &str,
     is_root: bool,
+    ignore_dev_dependency: bool,
 ) -> anyhow::Result<Module> {
-    let mut builder = eval_module_include(files, path, is_root).await?;
+    let mut builder = eval_module_include(files, path, is_root, ignore_dev_dependency).await?;
 
     // TODO: parallelise parsing of includes.
 
@@ -99,7 +100,8 @@ pub(crate) async fn eval_module(
             anyhow::anyhow!("Invalid unicode in include path: {:?}", sub_path_buf)
         })?;
 
-        let sub_builder = eval_module_include(files, sub_path, is_root).await?;
+        let sub_builder =
+            eval_module_include(files, sub_path, is_root, ignore_dev_dependency).await?;
         includes.extend(sub_builder.includes.clone());
         builder.merge(sub_builder);
     }
@@ -114,6 +116,7 @@ async fn eval_module_include(
     files: &BoxFileStore<'static>,
     path: &str,
     is_root: bool,
+    ignore_dev_dependency: bool,
 ) -> anyhow::Result<ModuleBuilder<'static>> {
     let files_owned = files.clone();
 
@@ -121,7 +124,8 @@ async fn eval_module_include(
         ModuleExtra::new_root(files_owned)
     } else {
         ModuleExtra::new(files_owned)
-    };
+    }
+    .with_ignore_dev_dependency(ignore_dev_dependency);
 
     // Fetch file contents
     let file = files.read_file(path).await?;
@@ -138,8 +142,6 @@ async fn eval_module_include(
         Ok::<_, starlark::Error>(())
     })
     .map_err(|e| e.into_anyhow())?;
-
-    println!("MODULE.bazel defined module name {bzl_module:?}");
 
     Ok(bzl_module.into_inner())
 }
@@ -183,4 +185,74 @@ pub(crate) async fn eval_repo(path: &Path) -> anyhow::Result<Module> {
     .map_err(|e| e.into_anyhow())?;
 
     todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bazel::package::{DynFileStore, TypeErasingFileStore};
+    use crate::bazel::repo::InMemoryFileStore;
+    use std::collections::HashMap;
+
+    fn module_files() -> BoxFileStore<'static> {
+        let files = HashMap::from([
+            (
+                "MODULE.bazel".to_owned(),
+                br#"
+module(name = "root", version = "1.0")
+bazel_dep(name = "normal", version = "1.0")
+include("fragment.MODULE.bazel")
+"#
+                .to_vec(),
+            ),
+            (
+                "fragment.MODULE.bazel".to_owned(),
+                br#"bazel_dep(name = "dev", version = "1.0", dev_dependency = True)"#.to_vec(),
+            ),
+        ]);
+        std::sync::Arc::from(DynFileStore::new_box(Box::new(TypeErasingFileStore(
+            InMemoryFileStore::new(files),
+        ))))
+    }
+
+    #[tokio::test]
+    async fn dev_dependencies_are_root_only_and_respect_ignore_flag() {
+        let files = module_files();
+        let root = eval_module(&files, "MODULE.bazel", true, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            root.bazel_deps
+                .iter()
+                .map(|dependency| dependency.name.as_str())
+                .collect::<Vec<_>>(),
+            ["normal", "dev"]
+        );
+
+        let ignored = eval_module(&files, "MODULE.bazel", true, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            ignored
+                .bazel_deps
+                .iter()
+                .map(|dependency| dependency.name.as_str())
+                .collect::<Vec<_>>(),
+            ["normal"]
+        );
+
+        for ignore in [false, true] {
+            let non_root = eval_module(&files, "MODULE.bazel", false, ignore)
+                .await
+                .unwrap();
+            assert_eq!(
+                non_root
+                    .bazel_deps
+                    .iter()
+                    .map(|dependency| dependency.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["normal"]
+            );
+        }
+    }
 }

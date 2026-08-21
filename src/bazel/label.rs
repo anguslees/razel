@@ -2,10 +2,11 @@
 
 #![allow(dead_code, unused)]
 
+use allocative::{Allocative, Visitor, ident_key};
 use chumsky::prelude::*;
 use std::{borrow::Cow, fmt, ops::Deref};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ApparentRepo<'a>(Cow<'a, str>);
 
 impl<'a> ApparentRepo<'a> {
@@ -38,8 +39,18 @@ impl<'a> fmt::Display for ApparentRepo<'a> {
     }
 }
 
+impl Allocative for ApparentRepo<'_> {
+    fn visit<'a, 'b: 'a>(&self, visitor: &'a mut Visitor<'b>) {
+        let mut visitor = visitor.enter_self(self);
+        if let Cow::Owned(name) = &self.0 {
+            visitor.visit_field(ident_key!(name), name);
+        }
+        visitor.exit();
+    }
+}
+
 /// An empty string means the main repository.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CanonicalRepo<'a>(Cow<'a, str>);
 
 impl<'a> CanonicalRepo<'a> {
@@ -76,7 +87,17 @@ impl<'a> fmt::Display for CanonicalRepo<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+impl Allocative for CanonicalRepo<'_> {
+    fn visit<'a, 'b: 'a>(&self, visitor: &'a mut Visitor<'b>) {
+        let mut visitor = visitor.enter_self(self);
+        if let Cow::Owned(name) = &self.0 {
+            visitor.visit_field(ident_key!(name), name);
+        }
+        visitor.exit();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Allocative)]
 pub enum Repo<'a> {
     Apparent(ApparentRepo<'a>),
     Canonical(CanonicalRepo<'a>),
@@ -153,7 +174,7 @@ impl<'a> From<&Repo<'a>> for Repo<'a> {
 /// `[@|@@][repo_name]//[package_path]:[target_name]`
 ///
 /// See https://bazel.build/concepts/labels
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Label<'a, R = Repo<'a>> {
     /// The repository name, e.g., `my_repo`.
     pub repo: R,
@@ -161,6 +182,20 @@ pub struct Label<'a, R = Repo<'a>> {
     pub package: Cow<'a, str>,
     /// The target name, e.g., `my_target`.
     pub target: Cow<'a, str>,
+}
+
+impl<R: Allocative> Allocative for Label<'_, R> {
+    fn visit<'a, 'b: 'a>(&self, visitor: &'a mut Visitor<'b>) {
+        let mut visitor = visitor.enter_self(self);
+        visitor.visit_field(ident_key!(repo), &self.repo);
+        if let Cow::Owned(package) = &self.package {
+            visitor.visit_field(ident_key!(package), package);
+        }
+        if let Cow::Owned(target) = &self.target {
+            visitor.visit_field(ident_key!(target), target);
+        }
+        visitor.exit();
+    }
 }
 
 /// A Bazel label, identifying a canonical repo target.
@@ -249,6 +284,14 @@ impl<'a> ApparentLabel<'a> {
 }
 
 impl<'a> CanonicalLabel<'a> {
+    pub fn as_borrowed(&self) -> CanonicalLabel<'_> {
+        CanonicalLabel {
+            repo: self.repo.as_borrowed(),
+            package: Cow::Borrowed(self.package()),
+            target: Cow::Borrowed(self.name()),
+        }
+    }
+
     pub fn into_owned(self) -> CanonicalLabel<'static> {
         CanonicalLabel {
             repo: self.repo.into_owned(),
@@ -433,6 +476,21 @@ fn target_name_parser<'a>()
         .labelled("target name")
 }
 
+pub(crate) fn validate_target_name(name: &str) -> Result<(), String> {
+    target_name_parser()
+        .then_ignore(end())
+        .parse(name)
+        .into_result()
+        .map(|_| ())
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+}
+
 fn package_name_parser<'a>()
 -> impl chumsky::Parser<'a, &'a str, &'a str, extra::Err<ParseError<'a>>> + Clone {
     choice((one_of(r##"! "#$%&'()*+,-.;<=>?@[]^_`{|}"##), alphanumeric()))
@@ -452,6 +510,21 @@ fn package_name_parser<'a>()
         .separated_by(just('/'))
         .to_slice()
         .labelled("package name")
+}
+
+pub(crate) fn validate_package_name(name: &str) -> Result<(), String> {
+    package_name_parser()
+        .then_ignore(end())
+        .parse(name)
+        .into_result()
+        .map(|_| ())
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
 }
 
 fn repo_parser<'a>()
@@ -540,7 +613,7 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum TargetKind<'a> {
+pub enum TargetPatternKind<'a> {
     /// A specific target, e.g. `//foo:bar` or `//foo`
     Exact(Cow<'a, str>),
     /// All rules in a package, e.g. `//foo:all`
@@ -553,7 +626,7 @@ pub enum TargetKind<'a> {
 pub struct TargetPattern<'a, R = Repo<'a>> {
     pub repo: R,
     pub package: Cow<'a, str>,
-    pub target_kind: TargetKind<'a>,
+    pub target_kind: TargetPatternKind<'a>,
     /// If true, this pattern includes all subpackages (the `/...` suffix).
     pub include_subpackages: bool,
 }
@@ -582,8 +655,8 @@ impl<'a, R> TargetPattern<'a, R> {
         }
 
         match &self.target_kind {
-            TargetKind::Exact(t) => t == &label.target,
-            TargetKind::AllRules | TargetKind::AllTargets => true,
+            TargetPatternKind::Exact(t) => t == &label.target,
+            TargetPatternKind::AllRules | TargetPatternKind::AllTargets => true,
         }
     }
 }
@@ -592,7 +665,7 @@ impl<'a, R> TargetPattern<'a, R> {
 struct RelativeTargetPattern<'a> {
     repo: Option<Repo<'a>>,
     package: Option<Cow<'a, str>>,
-    target_kind: TargetKind<'a>,
+    target_kind: TargetPatternKind<'a>,
     include_subpackages: bool,
 }
 
@@ -612,6 +685,7 @@ fn target_pattern_parser<'a>()
 
     let target_suffix = just(':').ignore_then(choice((
         just('*').to(Suffix::AllTargets),
+        just("all-targets").to(Suffix::AllTargets),
         just("all").to(Suffix::AllRules),
         target.map(Suffix::Exact),
     )));
@@ -680,38 +754,40 @@ fn target_pattern_parser<'a>()
 
                 let target_kind = match (pkg, include_subpackages, t.as_ref()) {
                     // If the target is explicitly specified
-                    (_, _, Some(Suffix::AllTargets)) => TargetKind::AllTargets,
-                    (_, _, Some(Suffix::AllRules)) => TargetKind::AllRules,
-                    (_, _, Some(Suffix::Exact(t))) => TargetKind::Exact(Cow::Borrowed(t)),
+                    (_, _, Some(Suffix::AllTargets)) => TargetPatternKind::AllTargets,
+                    (_, _, Some(Suffix::AllRules)) => TargetPatternKind::AllRules,
+                    (_, _, Some(Suffix::Exact(t))) => TargetPatternKind::Exact(Cow::Borrowed(t)),
 
                     // Defaults for exact shorthands like //foo/bar or @repo// or //foo/bar/...
 
                     // If it ends in /... and no explicit target suffix is given, it means :all
-                    (_, true, None) => TargetKind::AllRules,
+                    (_, true, None) => TargetPatternKind::AllRules,
 
                     // @repo// -> @repo//:repo
                     (Some(""), false, None) if r.is_some() => {
                         let name = r.clone().unwrap().into_name();
-                        TargetKind::Exact(name)
+                        TargetPatternKind::Exact(name)
                     }
 
                     // //foo/bar -> //foo/bar:bar
                     (Some(pkg), false, None) if !pkg.is_empty() => {
                         let tgt = pkg.rsplit_once('/').map(|(_, tgt)| tgt).unwrap_or(pkg);
-                        TargetKind::Exact(Cow::Borrowed(tgt))
+                        TargetPatternKind::Exact(Cow::Borrowed(tgt))
                     }
 
                     // Default relative
-                    (None, false, None) => TargetKind::Exact(Cow::Borrowed("")),
-                    (None, false, Some(Suffix::Exact(t))) => TargetKind::Exact(Cow::Borrowed(t)),
-                    (Some(""), false, None) => TargetKind::Exact(Cow::Borrowed("")),
+                    (None, false, None) => TargetPatternKind::Exact(Cow::Borrowed("")),
+                    (None, false, Some(Suffix::Exact(t))) => {
+                        TargetPatternKind::Exact(Cow::Borrowed(t))
+                    }
+                    (Some(""), false, None) => TargetPatternKind::Exact(Cow::Borrowed("")),
                     // If it parsed as a single string segment without : and it didn't match the other rules,
                     // we treat it as an empty target for now, parse_target_pattern turns it into Exact(s).
                     // Or rather, we output Exact("") so it doesn't fail, but parse_target_pattern overrides it.
                     (Some(pkg), false, None) if !pkg.contains('/') => {
-                        TargetKind::Exact(Cow::Borrowed(""))
+                        TargetPatternKind::Exact(Cow::Borrowed(""))
                     }
-                    _ => TargetKind::Exact(Cow::Borrowed("")),
+                    _ => TargetPatternKind::Exact(Cow::Borrowed("")),
                 };
 
                 let mut final_pkg = pkg.map(Cow::Borrowed);
@@ -734,7 +810,7 @@ fn target_pattern_parser<'a>()
         .validate(|rel_pattern: RelativeTargetPattern<'a>, e, emitter| {
             if rel_pattern.repo.is_none()
                 && rel_pattern.package.is_none()
-                && rel_pattern.target_kind == TargetKind::Exact(Cow::Borrowed(""))
+                && rel_pattern.target_kind == TargetPatternKind::Exact(Cow::Borrowed(""))
             {
                 // empty pattern is invalid
                 emitter.emit(Rich::custom(e.span(), "invalid target pattern"));
@@ -789,8 +865,10 @@ where
 
     let target_kind = match relative.target_kind {
         // If the relative pattern didn't provide a target and resolved as empty, use context target
-        TargetKind::Exact(ref t) if t.is_empty() => TargetKind::Exact(context.target.clone()),
-        TargetKind::Exact(ref t)
+        TargetPatternKind::Exact(ref t) if t.is_empty() => {
+            TargetPatternKind::Exact(context.target.clone())
+        }
+        TargetPatternKind::Exact(ref t)
             if !is_absolute && !s.contains(':') && s != "..." && !s.ends_with("/...") =>
         {
             // It was a relative shorthand like "wiz" or "foo/wiz" but without a colon.
@@ -799,9 +877,9 @@ where
                     .rsplit_once('/')
                     .map(|(_, tgt)| tgt)
                     .unwrap_or(rp.as_ref());
-                TargetKind::Exact(Cow::Owned(tgt.to_string()))
+                TargetPatternKind::Exact(Cow::Owned(tgt.to_string()))
             } else {
-                TargetKind::Exact(Cow::Owned(s.to_string()))
+                TargetPatternKind::Exact(Cow::Owned(s.to_string()))
             }
         }
         other => other,
@@ -1202,7 +1280,10 @@ mod tests {
         let pat = parse_target_pattern("//foo/bar:wiz", &context).unwrap();
         assert_eq!(pat.repo, Repo::Canonical(MAIN_REPO));
         assert_eq!(pat.package, "foo/bar");
-        assert_eq!(pat.target_kind, TargetKind::Exact(Cow::Borrowed("wiz")));
+        assert_eq!(
+            pat.target_kind,
+            TargetPatternKind::Exact(Cow::Borrowed("wiz"))
+        );
         assert!(!pat.include_subpackages);
 
         assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo/bar", "wiz")));
@@ -1215,7 +1296,10 @@ mod tests {
         let pat = parse_target_pattern("//foo/bar", &MAIN_REPO_ROOT).unwrap();
         assert_eq!(pat.repo, Repo::Canonical(MAIN_REPO));
         assert_eq!(pat.package, "foo/bar");
-        assert_eq!(pat.target_kind, TargetKind::Exact(Cow::Borrowed("bar")));
+        assert_eq!(
+            pat.target_kind,
+            TargetPatternKind::Exact(Cow::Borrowed("bar"))
+        );
         assert!(!pat.include_subpackages);
     }
 
@@ -1223,7 +1307,7 @@ mod tests {
     fn test_target_pattern_all_rules() {
         let pat = parse_target_pattern("//foo/bar:all", &MAIN_REPO_ROOT).unwrap();
         assert_eq!(pat.package, "foo/bar");
-        assert_eq!(pat.target_kind, TargetKind::AllRules);
+        assert_eq!(pat.target_kind, TargetPatternKind::AllRules);
         assert!(!pat.include_subpackages);
 
         assert!(pat.matches(&Label::new(
@@ -1242,7 +1326,7 @@ mod tests {
     fn test_target_pattern_all_targets() {
         let pat = parse_target_pattern("//foo/bar:*", &MAIN_REPO_ROOT).unwrap();
         assert_eq!(pat.package, "foo/bar");
-        assert_eq!(pat.target_kind, TargetKind::AllTargets);
+        assert_eq!(pat.target_kind, TargetPatternKind::AllTargets);
         assert!(!pat.include_subpackages);
 
         assert!(pat.matches(&Label::new(
@@ -1258,10 +1342,23 @@ mod tests {
     }
 
     #[test]
+    fn test_target_pattern_all_targets_alias() {
+        let pat = parse_target_pattern("//foo:all-targets", &MAIN_REPO_ROOT).unwrap();
+        assert_eq!(pat.package, "foo");
+        assert_eq!(pat.target_kind, TargetPatternKind::AllTargets);
+        assert!(!pat.include_subpackages);
+
+        let recursive = parse_target_pattern("//foo/...:all-targets", &MAIN_REPO_ROOT).unwrap();
+        assert_eq!(recursive.package, "foo");
+        assert_eq!(recursive.target_kind, TargetPatternKind::AllTargets);
+        assert!(recursive.include_subpackages);
+    }
+
+    #[test]
     fn test_target_pattern_rules_beneath() {
         let pat = parse_target_pattern("//foo/...", &MAIN_REPO_ROOT).unwrap();
         assert_eq!(pat.package, "foo");
-        assert_eq!(pat.target_kind, TargetKind::AllRules);
+        assert_eq!(pat.target_kind, TargetPatternKind::AllRules);
         assert!(pat.include_subpackages);
 
         assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo", "target")));
@@ -1279,7 +1376,7 @@ mod tests {
     fn test_target_pattern_rules_beneath_root() {
         let pat = parse_target_pattern("//...", &MAIN_REPO_ROOT).unwrap();
         assert_eq!(pat.package, "");
-        assert_eq!(pat.target_kind, TargetKind::AllRules);
+        assert_eq!(pat.target_kind, TargetPatternKind::AllRules);
         assert!(pat.include_subpackages);
 
         assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "", "target")));
@@ -1291,7 +1388,7 @@ mod tests {
     fn test_target_pattern_targets_beneath() {
         let pat = parse_target_pattern("//foo/...:*", &MAIN_REPO_ROOT).unwrap();
         assert_eq!(pat.package, "foo");
-        assert_eq!(pat.target_kind, TargetKind::AllTargets);
+        assert_eq!(pat.target_kind, TargetPatternKind::AllTargets);
         assert!(pat.include_subpackages);
 
         assert!(pat.matches(&Label::new(Repo::Canonical(MAIN_REPO), "foo", "file.txt")));
@@ -1307,7 +1404,7 @@ mod tests {
         let context = Label::new(Repo::Canonical(MAIN_REPO), "my/pkg", "a_target");
         let pat = parse_target_pattern("foo/...", &context).unwrap();
         assert_eq!(pat.package, "my/pkg/foo");
-        assert_eq!(pat.target_kind, TargetKind::AllRules); // the shorthand for ... expands to :all
+        assert_eq!(pat.target_kind, TargetPatternKind::AllRules); // the shorthand for ... expands to :all
         assert!(pat.include_subpackages);
 
         assert!(pat.matches(&Label::new(
@@ -1327,7 +1424,10 @@ mod tests {
         let context = Label::new(Repo::Canonical(MAIN_REPO), "my/pkg", "a_target");
         let pat = parse_target_pattern(":wiz", &context).unwrap();
         assert_eq!(pat.package, "my/pkg");
-        assert_eq!(pat.target_kind, TargetKind::Exact(Cow::Borrowed("wiz")));
+        assert_eq!(
+            pat.target_kind,
+            TargetPatternKind::Exact(Cow::Borrowed("wiz"))
+        );
         assert!(!pat.include_subpackages);
     }
 
@@ -1338,7 +1438,10 @@ mod tests {
         // By Bazel terminology, if there is no `:`, `wiz` in package `my/pkg` means `my/pkg:wiz`
         let pat = parse_target_pattern("wiz", &context).unwrap();
         assert_eq!(pat.package, "my/pkg");
-        assert_eq!(pat.target_kind, TargetKind::Exact(Cow::Borrowed("wiz")));
+        assert_eq!(
+            pat.target_kind,
+            TargetPatternKind::Exact(Cow::Borrowed("wiz"))
+        );
         assert!(!pat.include_subpackages);
     }
 }

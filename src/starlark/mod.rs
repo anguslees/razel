@@ -3,3 +3,4 @@
 pub(crate) mod builtins;
 pub(crate) mod eval;
 pub(crate) mod globals;
+pub(crate) mod rule;

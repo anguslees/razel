@@ -1,0 +1,3 @@
+load(":defs.bzl", "mandatory_rule")
+
+mandatory_rule(name = "missing")

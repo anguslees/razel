@@ -89,7 +89,6 @@ impl ModuleExtra {
         )))
     }
 
-    #[allow(dead_code)]
     pub fn with_ignore_dev_dependency(self, ignore_dev_dependency: bool) -> Self {
         self.0.lock().unwrap().ignore_dev_dependency = ignore_dev_dependency;
         self
@@ -142,7 +141,7 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
     ) -> starlark::Result<NoneType> {
         let _ = max_compatibility_level;
         let mut bzl_module = ModuleExtra::from_eval(eval).builder();
-        if bzl_module.is_root_module || (dev_dependency && !bzl_module.ignore_dev_dependency) {
+        if !dev_dependency || (bzl_module.is_root_module && !bzl_module.ignore_dev_dependency) {
             let repo_name = match repo_name {
                 NoneOr::None => name,
                 NoneOr::Other(s) => {
@@ -281,7 +280,7 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
     ) -> starlark::Result<NoneType> {
         let _ = platform_labels;
         let bzl_module = ModuleExtra::from_eval(eval).builder();
-        if bzl_module.is_root_module || (dev_dependency && !bzl_module.ignore_dev_dependency) {
+        if !dev_dependency || (bzl_module.is_root_module && !bzl_module.ignore_dev_dependency) {
             todo!();
         }
         Ok(NoneType)
@@ -294,7 +293,7 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
     ) -> starlark::Result<NoneType> {
         let _ = toolchain_labels;
         let bzl_module = ModuleExtra::from_eval(eval).builder();
-        if bzl_module.is_root_module || (dev_dependency && !bzl_module.ignore_dev_dependency) {
+        if !dev_dependency || (bzl_module.is_root_module && !bzl_module.ignore_dev_dependency) {
             todo!();
         }
         Ok(NoneType)
@@ -334,7 +333,7 @@ pub(crate) fn module_bazel(builder: &mut GlobalsBuilder) {
         let _ = extension_bzl_file;
         let _ = extension_name;
         let bzl_module = ModuleExtra::from_eval(eval).builder();
-        if !bzl_module.is_root_module && (!dev_dependency || bzl_module.ignore_dev_dependency) {
+        if dev_dependency && (!bzl_module.is_root_module || bzl_module.ignore_dev_dependency) {
             // "usage of module extension is ignored"
             return Ok(NoneOr::None);
         }

@@ -45,8 +45,8 @@ impl<S: Stream> SharedState<S> {
     fn gc(&mut self) {
         if self.cursors.is_empty() {
             // If there are no consumers left, we can clear the entire buffer
+            self.buffer_start_index += self.buffer.len();
             self.buffer.clear();
-            self.buffer_start_index += self.buffer.len(); // just keep it mathematically correct
             return;
         }
 
@@ -149,6 +149,7 @@ where
                         waker.wake();
                     }
                 }
+                state.gc();
 
                 Poll::Ready(Some(item))
             }
@@ -263,5 +264,13 @@ mod tests {
         assert_eq!(t1.next().await, Some(4));
         assert_eq!(t1.next().await, Some(5));
         assert_eq!(t1.next().await, None);
+    }
+
+    #[tokio::test]
+    async fn test_single_consumer_does_not_buffer() {
+        let mut tee = stream::iter(0..100).tee();
+        while tee.next().await.is_some() {
+            assert!(tee.shared.lock().expect("Mutex poisoned").buffer.is_empty());
+        }
     }
 }

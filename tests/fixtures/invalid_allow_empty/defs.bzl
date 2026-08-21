@@ -1,0 +1,9 @@
+def _implementation(ctx):
+    pass
+
+bad_rule = rule(
+    implementation = _implementation,
+    attrs = {
+        "value": attr.string(default = "", allow_empty = False),
+    },
+)
