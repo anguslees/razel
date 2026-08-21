@@ -1,18 +1,26 @@
-use crate::bazel::Configuration;
-use crate::bazel::label::{Label, MAIN_REPO_ROOT, Repo};
+use crate::bazel::InvocationOptions;
+use crate::bazel::label::MAIN_REPO_ROOT;
 use crate::stream_tee::{StreamTee, StreamTeeExt};
-use crate::workspace::Workspace;
+use crate::workspace::{ExpandedTarget, ExpandedTargetKind, Workspace};
 use chumsky::prelude::*;
 use chumsky::span::{SimpleSpan, Spanned};
+use clap::ValueEnum;
 use futures::stream::{self, BoxStream, StreamExt};
-use std::collections::HashMap;
-use std::marker::Unpin;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
-pub type QueryResult<'a> = Result<Label<'a, Repo<'a>>, String>;
-pub type QueryStream<'a> = BoxStream<'a, QueryResult<'a>>;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum QueryOutput {
+    #[default]
+    Label,
+    LabelKind,
+}
+
+pub type QueryResult = Result<ExpandedTarget, String>;
+pub type QueryStream<'a> = BoxStream<'a, QueryResult>;
 
 #[derive(Clone)]
 pub struct QueryContext<'a> {
@@ -182,100 +190,89 @@ pub fn parser<'a>() -> impl Parser<'a, &'a str, Spanned<Expr<'a>>, extra::Err<Ri
 impl<'a> Expr<'a> {
     pub fn eval(&self, ctx: &QueryContext<'a>) -> QueryStream<'a> {
         match self {
-            &Expr::String(s) => {
-                let ws = ctx.workspace.clone();
-                let fut = async move {
-                    match crate::bazel::label::parse_target_pattern(s, &MAIN_REPO_ROOT) {
-                        Ok(pattern) => ws
-                            .expand_pattern(pattern)
-                            .map(|res| match res {
-                                Ok(label) => Ok(label),
-                                Err(e) => Err(e.to_string()),
-                            })
-                            .boxed(),
-                        Err(e) => stream::once(async move { Err(e.to_string()) }).boxed(),
+            &Expr::String(pattern) => {
+                match crate::bazel::label::parse_target_pattern(pattern, &MAIN_REPO_ROOT) {
+                    Ok(pattern) => {
+                        let mut targets = ctx.workspace.clone().expand_pattern(pattern);
+                        async_stream::stream! {
+                            let mut matched = Vec::new();
+                            while let Some(result) = targets.next().await {
+                                match result {
+                                    Ok(target) => matched.push(target),
+                                    Err(error) => {
+                                        yield Err(error.to_string());
+                                        return;
+                                    }
+                                }
+                            }
+                            matched.sort_unstable_by(|left, right| left.label.cmp(&right.label));
+                            for target in matched {
+                                yield Ok(target);
+                            }
+                        }
+                        .boxed()
                     }
-                };
-                stream::once(fut).flatten().boxed()
+                    Err(error) => stream::once(async move { Err(error.to_string()) }).boxed(),
+                }
             }
             Expr::Int(_) => {
-                stream::once(async { Err("Int not supported out of function context".to_string()) })
+                stream::once(async { Err("Int not supported out of function context".to_owned()) })
                     .boxed()
             }
             Expr::Function(name, _args) => {
-                // Return an empty or unimplemented error stream for now
-                let err_msg = format!("Function {} not fully implemented", name);
-                stream::once(async move { Err(err_msg) }).boxed()
+                let error = format!("Function {name} not fully implemented");
+                stream::once(async move { Err(error) }).boxed()
             }
-            Expr::Let(name, val, body) => {
-                // Evaluate the let value stream
-                let val_stream = val.inner.eval(ctx);
-                // Tee it so multiple $refs can consume it
-                let val_tee = val_stream.tee();
-
-                let mut new_ctx = ctx.clone();
-                new_ctx.variables.insert(name, val_tee);
-
-                body.inner.eval(&new_ctx)
+            Expr::Let(name, value, body) => {
+                let value = value.inner.eval(ctx).tee();
+                let mut nested = ctx.clone();
+                nested.variables.insert(name, value);
+                body.inner.eval(&nested)
             }
-            Expr::Variable(name) => {
-                if let Some(tee) = ctx.variables.get(name) {
-                    // clone the tee giving us a fresh consumer of the items, then box it
-                    tee.clone().boxed()
-                } else {
-                    let err_msg = format!("Undefined variable {}", name);
-                    stream::once(async move { Err(err_msg) }).boxed()
+            Expr::Variable(name) => match ctx.variables.get(name) {
+                Some(stream) => stream.clone().boxed(),
+                None => {
+                    let error = format!("Undefined variable {name}");
+                    stream::once(async move { Err(error) }).boxed()
                 }
-            }
+            },
             Expr::SetOp(SetOp::Union, left, right) => {
-                let l_stream = left.inner.eval(ctx);
-                let r_stream = right.inner.eval(ctx);
-
-                // Track seen labels
-                let seen =
-                    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-                let seen_for_l = seen.clone();
-
-                let l_mapped = l_stream.map(move |res| {
-                    if let Ok(l) = &res {
-                        let mut s = seen_for_l.lock().expect("Mutex poisoned");
-                        s.insert(l.clone());
+                let left = left.inner.eval(ctx);
+                let right = right.inner.eval(ctx);
+                async_stream::stream! {
+                    let mut seen = HashSet::new();
+                    for mut values in [left, right] {
+                        while let Some(result) = values.next().await {
+                            match result {
+                                Ok(target) if seen.insert(target.label.clone()) => yield Ok(target),
+                                Ok(_) => {}
+                                Err(error) => yield Err(error),
+                            }
+                        }
                     }
-                    res
-                });
-
-                let r_filtered = r_stream.filter(move |res| match res {
-                    Ok(l) => {
-                        let s = seen.lock().expect("Mutex poisoned");
-                        futures::future::ready(!s.contains(l))
-                    }
-                    Err(_) => futures::future::ready(true),
-                });
-
-                l_mapped.chain(r_filtered).boxed()
+                }
+                .boxed()
             }
             Expr::SetOp(SetOp::Intersect, _, _) => {
-                // Intersect requires knowing contents of right.
-                stream::once(async move { Err("Intersect not yet implemented".to_string()) })
-                    .boxed()
+                stream::once(async { Err("Intersect not yet implemented".to_owned()) }).boxed()
             }
             Expr::SetOp(SetOp::Difference, _, _) => {
-                stream::once(async move { Err("Difference not yet implemented".to_string()) })
-                    .boxed()
+                stream::once(async { Err("Difference not yet implemented".to_owned()) }).boxed()
             }
         }
     }
 }
 
-pub async fn query<W>(out: &mut W, _config: Arc<Configuration>, query: &str) -> anyhow::Result<()>
+pub async fn query<W>(
+    out: &mut W,
+    options: Arc<InvocationOptions>,
+    output: QueryOutput,
+    query: &str,
+) -> anyhow::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let workspace = Workspace::new(".").await?;
-
-    // Construct repos from bzlmod declarations
-    // Global Map of Canonical name -> FusedFuture<dyn Repo>
-    // Each repo (including _main) needs a Map of repo name -> Canonical name
+    let workspace = Workspace::new(".", options).await?;
 
     let ast = parser().parse(query).into_result().map_err(|errs| {
         anyhow::anyhow!(
@@ -287,20 +284,36 @@ where
         )
     })?;
 
-    // Evaluate the query!
-    let mut result_stream = ast.inner.eval(&QueryContext::new(workspace.clone()));
-
-    while let Some(res) = result_stream.next().await {
-        match res {
-            Ok(label) => {
-                out.write_all(format!("{}\n", label).as_bytes()).await?;
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("Query evaluation error: {}", e));
-            }
+    let context = QueryContext::new(workspace);
+    let mut result = ast.inner.eval(&context);
+    while let Some(target) = result.next().await {
+        let target = target.map_err(|error| anyhow::anyhow!("Query evaluation error: {error}"))?;
+        match output {
+            QueryOutput::Label => {}
+            QueryOutput::LabelKind => match &target.kind {
+                ExpandedTargetKind::Rule(rule_class) => {
+                    out.write_all(rule_class.as_bytes()).await?;
+                    out.write_all(b" rule ").await?;
+                }
+                ExpandedTargetKind::SourceFile => {
+                    out.write_all(b"source file ").await?;
+                }
+                ExpandedTargetKind::GeneratedFile => {
+                    out.write_all(b"generated file ").await?;
+                }
+            },
         }
+        if !target.label.repo.as_str().is_empty() {
+            out.write_all(b"@@").await?;
+            out.write_all(target.label.repo.as_str().as_bytes()).await?;
+        }
+        out.write_all(b"//").await?;
+        out.write_all(target.label.package().as_bytes()).await?;
+        out.write_all(b":").await?;
+        out.write_all(target.label.name().as_bytes()).await?;
+        out.write_all(b"\n").await?;
+        out.flush().await?;
     }
-
     Ok(())
 }
 

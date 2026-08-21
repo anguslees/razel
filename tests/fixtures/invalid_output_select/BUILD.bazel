@@ -1,0 +1,9 @@
+load(":defs.bzl", "output_rule")
+
+output_rule(
+    name = "bad",
+    out = select({
+        ":condition": "selected.out",
+        "//conditions:default": "default.out",
+    }),
+)

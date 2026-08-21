@@ -1,0 +1,1 @@
+module(name = "invalid_defaults", version = "1.0")

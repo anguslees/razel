@@ -1,0 +1,1 @@
+module(name = "invalid_mandatory", version = "1.0")

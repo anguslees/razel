@@ -1,0 +1,8 @@
+load("//defs:rules.bzl", "context_macro", "context_rule")
+
+context_macro(name = "macro")
+
+context_rule(
+    name = "direct",
+    dep = "from_build.txt",
+)

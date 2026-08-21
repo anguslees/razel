@@ -1,0 +1,3 @@
+load(":missing.bzl", "missing_rule")
+
+missing_rule(name = "missing")

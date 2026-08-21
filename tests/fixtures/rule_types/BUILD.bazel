@@ -1,0 +1,25 @@
+load(":defs.bzl", "all_types_rule", "sample_binary", "sample_test")
+
+all_types_rule(
+    name = "typed",
+    flag = False,
+    count = 7,
+    text = "explicit",
+    strings = ["one", "two"],
+    dep = "missing_dep.txt",
+    deps = [Label(":missing_list_dep.txt")],
+    out = "typed.out",
+    outs = ["typed_a.out", "typed_b.out"],
+)
+
+sample_binary(
+    name = "binary",
+    args = ["--flag"],
+    env = {"KEY": "value"},
+)
+
+sample_test(
+    name = "test",
+    size = "small",
+    flaky = True,
+)
