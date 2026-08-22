@@ -13,7 +13,8 @@ use crate::{
     },
     workspace::Workspace,
 };
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 
@@ -213,8 +214,8 @@ impl<'a> Repository<'a> {
         root: &'repo str,
     ) -> BoxStream<'repo, anyhow::Result<String>> {
         Box::pin(async_stream::try_stream! {
-            let mut stack = vec![root.to_owned()];
-            while let Some(current_dir) = stack.pop() {
+            let mut pending = BinaryHeap::from([Reverse(root.to_owned())]);
+            while let Some(Reverse(current_dir)) = pending.pop() {
                 if self.canonical_name == MAIN_REPO
                     && (current_dir == "external" || current_dir.starts_with("external/"))
                 {
@@ -229,21 +230,16 @@ impl<'a> Repository<'a> {
                 let has_build = entries.iter().any(|entry| {
                     matches!(entry, DirEntry::File(name) if name == "BUILD.bazel" || name == "BUILD")
                 });
-                let mut subdirectories = entries
-                    .into_iter()
-                    .filter_map(|entry| match entry {
+                pending.extend(entries.into_iter().filter_map(|entry| match entry {
                         DirEntry::Directory(name) => {
-                            Some(if current_dir.is_empty() {
+                            Some(Reverse(if current_dir.is_empty() {
                                 name
                             } else {
                                 format!("{current_dir}/{name}")
-                            })
+                            }))
                         }
                         DirEntry::File(_) => None,
-                    })
-                    .collect::<Vec<_>>();
-                subdirectories.reverse();
-                stack.extend(subdirectories);
+                    }));
                 if current_dir != root && has_build {
                     yield current_dir;
                 }
@@ -625,6 +621,36 @@ pub mod test {
             paths.push(path.unwrap());
         }
         assert_eq!(paths, [".hidden", "bazel-custom", "target"]);
+    }
+
+    #[tokio::test]
+    async fn recursive_discovery_is_lexicographic_by_complete_package_path() {
+        let files = HashMap::from([
+            ("a/BUILD.bazel".to_owned(), Vec::new()),
+            ("a/child/BUILD.bazel".to_owned(), Vec::new()),
+            ("a-/BUILD.bazel".to_owned(), Vec::new()),
+            ("a0/BUILD.bazel".to_owned(), Vec::new()),
+        ]);
+        let files: BoxFileStore<'static> = std::sync::Arc::from(DynFileStore::new_box(Box::new(
+            crate::bazel::package::TypeErasingFileStore(InMemoryFileStore::new(files)),
+        )));
+        let repository = Repository {
+            repo_name: ApparentRepo::new("root"),
+            canonical_name: MAIN_REPO,
+            repo_mapping: RepositoryMapping {
+                repo_mapping: HashMap::new(),
+            },
+            files,
+        };
+
+        let paths = repository
+            .subpackage_paths("")
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(paths, ["a", "a-", "a/child", "a0"]);
     }
 
     #[tokio::test]
