@@ -442,6 +442,13 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         make_attr(AttributeType::Int, kwargs, eval)
     }
 
+    fn int_list<'v>(
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<AttrDescriptor> {
+        make_attr(AttributeType::IntList, kwargs, eval)
+    }
+
     fn string<'v>(
         #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -456,6 +463,20 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         make_attr(AttributeType::StringList, kwargs, eval)
     }
 
+    fn string_list_dict<'v>(
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<AttrDescriptor> {
+        make_attr(AttributeType::StringListDict, kwargs, eval)
+    }
+
+    fn string_dict<'v>(
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<AttrDescriptor> {
+        make_attr(AttributeType::StringDict, kwargs, eval)
+    }
+
     fn label<'v>(
         #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -468,6 +489,27 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<AttrDescriptor> {
         make_attr(AttributeType::LabelList, kwargs, eval)
+    }
+
+    fn label_keyed_string_dict<'v>(
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<AttrDescriptor> {
+        make_attr(AttributeType::LabelKeyedStringDict, kwargs, eval)
+    }
+
+    fn label_list_dict<'v>(
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<AttrDescriptor> {
+        make_attr(AttributeType::LabelListDict, kwargs, eval)
+    }
+
+    fn string_keyed_label_dict<'v>(
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<AttrDescriptor> {
+        make_attr(AttributeType::StringKeyedLabelDict, kwargs, eval)
     }
 
     fn output<'v>(
@@ -512,8 +554,14 @@ fn make_attr<'v>(
                 let supported = matches!(
                     attribute_type,
                     AttributeType::String
+                        | AttributeType::IntList
                         | AttributeType::StringList
+                        | AttributeType::StringListDict
+                        | AttributeType::StringDict
                         | AttributeType::LabelList
+                        | AttributeType::LabelKeyedStringDict
+                        | AttributeType::LabelListDict
+                        | AttributeType::StringKeyedLabelDict
                         | AttributeType::OutputList
                 );
                 let parsed = value
@@ -529,7 +577,11 @@ fn make_attr<'v>(
             "allow_files" => {
                 if !matches!(
                     attribute_type,
-                    AttributeType::Label | AttributeType::LabelList
+                    AttributeType::Label
+                        | AttributeType::LabelList
+                        | AttributeType::LabelKeyedStringDict
+                        | AttributeType::LabelListDict
+                        | AttributeType::StringKeyedLabelDict
                 ) {
                     return Err(starlark_error(
                         "allow_files is only valid for label attributes",
@@ -559,14 +611,18 @@ fn make_attr<'v>(
     }
 
     let dependency = match attribute_type {
-        AttributeType::Label | AttributeType::LabelList | AttributeType::LabelListDict => {
-            AttributeDependency::Dependency
-        }
+        AttributeType::Label
+        | AttributeType::LabelList
+        | AttributeType::LabelKeyedStringDict
+        | AttributeType::LabelListDict
+        | AttributeType::StringKeyedLabelDict => AttributeDependency::Dependency,
         AttributeType::Output | AttributeType::OutputList => AttributeDependency::Output,
         AttributeType::Bool
         | AttributeType::Int
+        | AttributeType::IntList
         | AttributeType::String
         | AttributeType::StringList
+        | AttributeType::StringListDict
         | AttributeType::StringDict => AttributeDependency::NoDependency,
     };
     let resolver = resolver_from_eval(eval)?;
@@ -609,14 +665,24 @@ fn type_default(attribute_type: AttributeType) -> Option<DirectAttributeValue> {
     match attribute_type {
         AttributeType::Bool => Some(DirectAttributeValue::Bool(false)),
         AttributeType::Int => Some(DirectAttributeValue::Int(0)),
+        AttributeType::IntList => Some(DirectAttributeValue::IntList(Vec::new())),
         AttributeType::String => Some(DirectAttributeValue::String(String::new())),
         AttributeType::StringList => Some(DirectAttributeValue::StringList(Vec::new())),
+        AttributeType::StringListDict => {
+            Some(DirectAttributeValue::StringListDict(BTreeMap::new()))
+        }
+        AttributeType::StringDict => Some(DirectAttributeValue::StringDict(BTreeMap::new())),
         AttributeType::Label => None,
         AttributeType::LabelList => Some(DirectAttributeValue::LabelList(Vec::new())),
+        AttributeType::LabelKeyedStringDict => {
+            Some(DirectAttributeValue::LabelKeyedStringDict(BTreeMap::new()))
+        }
+        AttributeType::LabelListDict => Some(DirectAttributeValue::LabelListDict(BTreeMap::new())),
+        AttributeType::StringKeyedLabelDict => {
+            Some(DirectAttributeValue::StringKeyedLabelDict(BTreeMap::new()))
+        }
         AttributeType::Output => None,
         AttributeType::OutputList => Some(DirectAttributeValue::OutputList(Vec::new())),
-        AttributeType::StringDict => Some(DirectAttributeValue::StringDict(BTreeMap::new())),
-        AttributeType::LabelListDict => Some(DirectAttributeValue::LabelListDict(BTreeMap::new())),
     }
 }
 
@@ -959,7 +1025,10 @@ pub(crate) fn convert_attribute(
     if terms.len() > 1
         && !matches!(
             schema.attribute_type,
-            AttributeType::String | AttributeType::StringList | AttributeType::LabelList
+            AttributeType::IntList
+                | AttributeType::String
+                | AttributeType::StringList
+                | AttributeType::LabelList
         )
     {
         return Err(starlark_error(format!(
@@ -1068,10 +1137,16 @@ fn validate_allow_empty(schema: &AttributeSchema, value: &AttributeValue) -> sta
 fn direct_value_is_empty(value: &DirectAttributeValue) -> bool {
     match value {
         DirectAttributeValue::String(value) => value.is_empty(),
+        DirectAttributeValue::IntList(value) => value.is_empty(),
         DirectAttributeValue::StringList(value) => value.is_empty(),
+        DirectAttributeValue::StringListDict(value) => value.is_empty(),
+        DirectAttributeValue::StringDict(value) => value.is_empty(),
         DirectAttributeValue::LabelList(value) | DirectAttributeValue::OutputList(value) => {
             value.is_empty()
         }
+        DirectAttributeValue::LabelKeyedStringDict(value) => value.is_empty(),
+        DirectAttributeValue::LabelListDict(value) => value.is_empty(),
+        DirectAttributeValue::StringKeyedLabelDict(value) => value.is_empty(),
         _ => false,
     }
 }
@@ -1089,6 +1164,14 @@ fn convert_direct(
     match (attribute_type, value) {
         (AttributeType::Bool, RawValue::Bool(value)) => Ok(DirectAttributeValue::Bool(value)),
         (AttributeType::Int, RawValue::Int(value)) => Ok(DirectAttributeValue::Int(value)),
+        (AttributeType::IntList, RawValue::List(values)) => values
+            .into_iter()
+            .map(|value| match value {
+                RawValue::Int(value) => Ok(value),
+                other => Err(mismatch(&other)),
+            })
+            .collect::<starlark::Result<Vec<_>>>()
+            .map(DirectAttributeValue::IntList),
         (AttributeType::String, RawValue::String(value)) => Ok(DirectAttributeValue::String(value)),
         (AttributeType::StringList, RawValue::List(values)) => values
             .into_iter()
@@ -1098,22 +1181,26 @@ fn convert_direct(
             })
             .collect::<starlark::Result<Vec<_>>>()
             .map(DirectAttributeValue::StringList),
-        (AttributeType::Label, value) => {
-            label_from_raw(value, resolver).map(DirectAttributeValue::Label)
-        }
-        (AttributeType::LabelList, RawValue::List(values)) => values
+        (AttributeType::StringListDict, RawValue::Dict(values)) => values
             .into_iter()
-            .map(|value| label_from_raw(value, resolver))
-            .collect::<starlark::Result<Vec<_>>>()
-            .map(DirectAttributeValue::LabelList),
-        (AttributeType::Output, value) => {
-            label_from_raw(value, resolver).map(DirectAttributeValue::Output)
-        }
-        (AttributeType::OutputList, RawValue::List(values)) => values
-            .into_iter()
-            .map(|value| label_from_raw(value, resolver))
-            .collect::<starlark::Result<Vec<_>>>()
-            .map(DirectAttributeValue::OutputList),
+            .map(|(key, value)| {
+                let RawValue::String(key) = key else {
+                    return Err(starlark_error("string_list_dict keys must be strings"));
+                };
+                let RawValue::List(values) = value else {
+                    return Err(starlark_error("string_list_dict values must be lists"));
+                };
+                let values = values
+                    .into_iter()
+                    .map(|value| match value {
+                        RawValue::String(value) => Ok(value),
+                        other => Err(mismatch(&other)),
+                    })
+                    .collect::<starlark::Result<Vec<_>>>()?;
+                Ok((key, values))
+            })
+            .collect::<starlark::Result<BTreeMap<_, _>>>()
+            .map(DirectAttributeValue::StringListDict),
         (AttributeType::StringDict, RawValue::Dict(values)) => values
             .into_iter()
             .map(|(key, value)| match (key, value) {
@@ -1124,6 +1211,32 @@ fn convert_direct(
             })
             .collect::<starlark::Result<BTreeMap<_, _>>>()
             .map(DirectAttributeValue::StringDict),
+        (AttributeType::Label, RawValue::None) => Ok(DirectAttributeValue::None),
+        (AttributeType::Label, value) => {
+            label_from_raw(value, resolver).map(DirectAttributeValue::Label)
+        }
+        (AttributeType::LabelList, RawValue::List(values)) => values
+            .into_iter()
+            .map(|value| label_from_raw(value, resolver))
+            .collect::<starlark::Result<Vec<_>>>()
+            .map(DirectAttributeValue::LabelList),
+        (AttributeType::LabelKeyedStringDict, RawValue::Dict(values)) => {
+            let mut converted = BTreeMap::new();
+            for (key, value) in values {
+                let key = label_from_raw(key, resolver)?;
+                let RawValue::String(value) = value else {
+                    return Err(starlark_error(
+                        "label_keyed_string_dict values must be strings",
+                    ));
+                };
+                if converted.insert(key.clone(), value).is_some() {
+                    return Err(starlark_error(format!(
+                        "duplicate label_keyed_string_dict key `{key}`"
+                    )));
+                }
+            }
+            Ok(DirectAttributeValue::LabelKeyedStringDict(converted))
+        }
         (AttributeType::LabelListDict, RawValue::Dict(values)) => values
             .into_iter()
             .map(|(key, value)| {
@@ -1141,6 +1254,26 @@ fn convert_direct(
             })
             .collect::<starlark::Result<BTreeMap<_, _>>>()
             .map(DirectAttributeValue::LabelListDict),
+        (AttributeType::StringKeyedLabelDict, RawValue::Dict(values)) => values
+            .into_iter()
+            .map(|(key, value)| {
+                let RawValue::String(key) = key else {
+                    return Err(starlark_error(
+                        "string_keyed_label_dict keys must be strings",
+                    ));
+                };
+                Ok((key, label_from_raw(value, resolver)?))
+            })
+            .collect::<starlark::Result<BTreeMap<_, _>>>()
+            .map(DirectAttributeValue::StringKeyedLabelDict),
+        (AttributeType::Output, value) => {
+            label_from_raw(value, resolver).map(DirectAttributeValue::Output)
+        }
+        (AttributeType::OutputList, RawValue::List(values)) => values
+            .into_iter()
+            .map(|value| label_from_raw(value, resolver))
+            .collect::<starlark::Result<Vec<_>>>()
+            .map(DirectAttributeValue::OutputList),
         (_, value) => Err(mismatch(&value)),
     }
 }

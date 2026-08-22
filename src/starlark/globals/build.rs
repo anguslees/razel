@@ -3,7 +3,7 @@ use crate::bazel::package::{PackageBuilder, PackageDefaults};
 use crate::bazel::repo::Repository;
 use crate::bazel::rule::{
     AttributeDependency, AttributeSchema, AttributeType, AttributeValue, DirectAttributeValue,
-    RuleClass, RuleClassSpec, native_rule_class,
+    RuleClass, RuleClassKind, RuleClassSpec, native_rule_class, native_rule_class_with_kind,
 };
 use crate::starlark::rule::{LabelResolver, add_context_globals, convert_attribute};
 use starlark::any::ProvidesStaticType;
@@ -41,6 +41,24 @@ fn attribute(
     dependency: AttributeDependency,
 ) -> AttributeSchema {
     AttributeSchema::new(name, attribute_type, default, dependency)
+}
+
+fn label_attribute(name: &str) -> AttributeSchema {
+    attribute(
+        name,
+        AttributeType::Label,
+        None,
+        AttributeDependency::Dependency,
+    )
+}
+
+fn label_list_attribute(name: &str) -> AttributeSchema {
+    attribute(
+        name,
+        AttributeType::LabelList,
+        Some(DirectAttributeValue::LabelList(Vec::new())),
+        AttributeDependency::Dependency,
+    )
 }
 
 static GENRULE: LazyLock<RuleClass> = LazyLock::new(|| {
@@ -83,21 +101,52 @@ static GENRULE: LazyLock<RuleClass> = LazyLock::new(|| {
 static FILEGROUP: LazyLock<RuleClass> = LazyLock::new(|| {
     native_rule_class(
         "filegroup",
-        vec![attribute(
-            "srcs",
-            AttributeType::LabelList,
-            Some(DirectAttributeValue::LabelList(Vec::new())),
-            AttributeDependency::Dependency,
-        )],
+        ["srcs", "data"].map(label_list_attribute).into(),
     )
 });
 
-static CC_LIBRARY: LazyLock<RuleClass> =
-    LazyLock::new(|| native_rule_class("cc_library", Vec::new()));
-static CC_BINARY: LazyLock<RuleClass> =
-    LazyLock::new(|| native_rule_class("cc_binary", Vec::new()));
-static SH_BINARY: LazyLock<RuleClass> =
-    LazyLock::new(|| native_rule_class("sh_binary", Vec::new()));
+static CC_LIBRARY: LazyLock<RuleClass> = LazyLock::new(|| {
+    let mut attributes: Vec<AttributeSchema> = [
+        "srcs",
+        "hdrs",
+        "textual_hdrs",
+        "deps",
+        "implementation_deps",
+        "data",
+        "additional_compiler_inputs",
+        "additional_linker_inputs",
+        "module_interfaces",
+    ]
+    .map(label_list_attribute)
+    .into();
+    attributes.extend(["linkstamp", "win_def_file"].map(label_attribute));
+    native_rule_class("cc_library", attributes)
+});
+
+static CC_BINARY: LazyLock<RuleClass> = LazyLock::new(|| {
+    let mut attributes: Vec<AttributeSchema> = [
+        "srcs",
+        "deps",
+        "data",
+        "additional_compiler_inputs",
+        "additional_linker_inputs",
+        "dynamic_deps",
+        "module_interfaces",
+        "reexport_deps",
+    ]
+    .map(label_list_attribute)
+    .into();
+    attributes.push(label_attribute("win_def_file"));
+    native_rule_class_with_kind("cc_binary", RuleClassKind::Executable, attributes)
+});
+
+static SH_BINARY: LazyLock<RuleClass> = LazyLock::new(|| {
+    native_rule_class_with_kind(
+        "sh_binary",
+        RuleClassKind::Executable,
+        ["srcs", "deps", "data"].map(label_list_attribute).into(),
+    )
+});
 
 fn instantiate_native<'v>(
     name: &str,

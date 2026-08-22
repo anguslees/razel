@@ -1,0 +1,36 @@
+filegroup(
+    name = "files",
+    srcs = ["filegroup.src"],
+    data = ["filegroup.data"],
+)
+
+cc_library(
+    name = "library",
+    srcs = ["lib.cc"],
+    hdrs = ["lib.h"],
+    textual_hdrs = ["lib.inc"],
+    data = ["lib.data"],
+    additional_compiler_inputs = ["compiler.in"],
+    additional_linker_inputs = ["linker.in"],
+    module_interfaces = ["module.cppm"],
+    linkstamp = "linkstamp.cc",
+    win_def_file = "lib.def",
+    tags = ["not-a-source.txt"],
+)
+
+cc_binary(
+    name = "app",
+    srcs = ["main.cc"],
+    deps = [":library"],
+    data = ["app.data"],
+    win_def_file = None,
+    args = ["not-a-source-arg.txt"],
+)
+
+sh_binary(
+    name = "script",
+    srcs = ["script.sh"],
+    deps = [":files"],
+    data = ["script.data"],
+    env = {"FILE": "not-a-source-env.txt"},
+)
