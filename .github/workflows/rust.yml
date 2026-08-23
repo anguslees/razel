@@ -36,3 +36,26 @@ jobs:
 
       - name: Build project
         run: cargo build --verbose --all-targets --all-features
+
+  bazel_build_and_test:
+    name: Bazel Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
+        with:
+          bazelisk-cache: true
+          # Store build cache per workflow.
+          disk-cache: ${{ github.workflow }}
+          # Share repository cache between workflows.
+          repository-cache: true
+          bazelrc: |
+            common --color=yes
+            common --announce_rc
+
+      - name: Bazel Test
+        # Note: test //... also builds everything
+        run: bazel test //...

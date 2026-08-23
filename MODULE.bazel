@@ -1,0 +1,56 @@
+module(
+    name = "razel",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "llvm", version = "0.8.18")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_rs", version = "0.0.106")
+bazel_dep(name = "zstd", version = "1.5.7.bcr.1")
+
+_PLATFORM_TRIPLES = [
+    "aarch64-apple-darwin",
+    "aarch64-pc-windows-msvc",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+
+toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
+toolchains.toolchain(
+    edition = "2024",
+    extra_rustc_flags = {
+        triple: ["--cfg=tokio_unstable"]
+        for triple in _PLATFORM_TRIPLES
+    },
+    version = "1.98.0",
+)
+use_repo(toolchains, "default_rust_toolchains")
+
+register_toolchains(
+    "@default_rust_toolchains//...",
+    "@llvm//toolchain:all",
+)
+
+crate = use_extension(
+    "@rules_rs//rs:extensions.bzl",
+    "crate",
+)
+crate.annotation(
+    crate = "tokio",
+    deps = ["@crates//:tracing"],
+    repositories = ["crates"],
+)
+crate.annotation(
+    crate = "zstd-sys",
+    deps = ["@zstd"],
+    gen_build_script = "off",
+)
+crate.from_cargo(
+    name = "crates",
+    cargo_lock = "//:Cargo.lock",
+    cargo_toml = "//:Cargo.toml",
+    platform_triples = _PLATFORM_TRIPLES,
+)
+use_repo(crate, "crates")

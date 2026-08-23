@@ -2191,6 +2191,7 @@ dependencies = [
  "starlark",
  "tokio",
  "tonic",
+ "tracing",
  "tracing-indicatif",
  "tracing-subscriber",
 ]

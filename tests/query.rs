@@ -1,14 +1,20 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
+fn razel_command() -> Command {
+    let binary = std::fs::canonicalize(assert_cmd::cargo::cargo_bin!("razel"))
+        .expect("razel binary should exist");
+    Command::new(binary)
+}
+
 fn basic_command() -> Command {
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
+    let mut command = razel_command();
     command.current_dir(format!("{}/examples/basic", env!("CARGO_MANIFEST_DIR")));
     command
 }
 
 fn inventory_command() -> Command {
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
+    let mut command = razel_command();
     command.current_dir(format!(
         "{}/tests/fixtures/query_inventory",
         env!("CARGO_MANIFEST_DIR")
@@ -17,7 +23,7 @@ fn inventory_command() -> Command {
 }
 
 fn rule_types_command() -> Command {
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
+    let mut command = razel_command();
     command.current_dir(format!(
         "{}/tests/fixtures/rule_types",
         env!("CARGO_MANIFEST_DIR")
@@ -26,7 +32,7 @@ fn rule_types_command() -> Command {
 }
 
 fn recursive_prefix_command() -> Command {
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
+    let mut command = razel_command();
     command.current_dir(format!(
         "{}/tests/fixtures/recursive_prefix",
         env!("CARGO_MANIFEST_DIR")
@@ -35,7 +41,7 @@ fn recursive_prefix_command() -> Command {
 }
 
 fn fixture_command(name: &str) -> Command {
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
+    let mut command = razel_command();
     command.current_dir(format!(
         "{}/tests/fixtures/{name}",
         env!("CARGO_MANIFEST_DIR")
