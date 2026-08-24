@@ -1,0 +1,3 @@
+load("//:missing.bzl", "missing")
+
+missing(name = "late")

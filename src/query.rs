@@ -192,26 +192,12 @@ impl<'a> Expr<'a> {
         match self {
             &Expr::String(pattern) => {
                 match crate::bazel::label::parse_target_pattern(pattern, &MAIN_REPO_ROOT) {
-                    Ok(pattern) => {
-                        let mut targets = ctx.workspace.clone().expand_pattern(pattern);
-                        async_stream::stream! {
-                            let mut matched = Vec::new();
-                            while let Some(result) = targets.next().await {
-                                match result {
-                                    Ok(target) => matched.push(target),
-                                    Err(error) => {
-                                        yield Err(error.to_string());
-                                        return;
-                                    }
-                                }
-                            }
-                            matched.sort_unstable_by(|left, right| left.label.cmp(&right.label));
-                            for target in matched {
-                                yield Ok(target);
-                            }
-                        }
-                        .boxed()
-                    }
+                    Ok(pattern) => ctx
+                        .workspace
+                        .clone()
+                        .expand_pattern(pattern)
+                        .map(|result| result.map_err(|error| error.to_string()))
+                        .boxed(),
                     Err(error) => stream::once(async move { Err(error.to_string()) }).boxed(),
                 }
             }

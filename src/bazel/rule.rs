@@ -24,14 +24,18 @@ pub enum RuleClassKind {
 pub enum AttributeType {
     Bool,
     Int,
+    IntList,
     String,
     StringList,
+    StringListDict,
+    StringDict,
     Label,
     LabelList,
+    LabelKeyedStringDict,
+    LabelListDict,
+    StringKeyedLabelDict,
     Output,
     OutputList,
-    StringDict,
-    LabelListDict,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,16 +47,21 @@ pub enum AttributeDependency {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectAttributeValue {
+    None,
     Bool(bool),
     Int(i64),
+    IntList(Vec<i64>),
     String(String),
     StringList(Vec<String>),
+    StringListDict(BTreeMap<String, Vec<String>>),
+    StringDict(BTreeMap<String, String>),
     Label(CanonicalLabel<'static>),
     LabelList(Vec<CanonicalLabel<'static>>),
+    LabelKeyedStringDict(BTreeMap<CanonicalLabel<'static>, String>),
+    LabelListDict(BTreeMap<String, Vec<CanonicalLabel<'static>>>),
+    StringKeyedLabelDict(BTreeMap<String, CanonicalLabel<'static>>),
     Output(CanonicalLabel<'static>),
     OutputList(Vec<CanonicalLabel<'static>>),
-    StringDict(BTreeMap<String, String>),
-    LabelListDict(BTreeMap<String, Vec<CanonicalLabel<'static>>>),
 }
 
 impl DirectAttributeValue {
@@ -80,10 +89,23 @@ impl DirectAttributeValue {
                     visitor(label)?;
                 }
             }
-            Self::Bool(_)
+            Self::LabelKeyedStringDict(labels) => {
+                for label in labels.keys() {
+                    visitor(label)?;
+                }
+            }
+            Self::StringKeyedLabelDict(labels) => {
+                for label in labels.values() {
+                    visitor(label)?;
+                }
+            }
+            Self::None
+            | Self::Bool(_)
             | Self::Int(_)
+            | Self::IntList(_)
             | Self::String(_)
             | Self::StringList(_)
+            | Self::StringListDict(_)
             | Self::StringDict(_) => {}
         }
         Ok(())
@@ -565,13 +587,21 @@ pub fn base_rule_attributes(kind: RuleClassKind) -> Vec<AttributeSchema> {
     attributes
 }
 
-pub fn native_rule_class(name: &str, mut attributes: Vec<AttributeSchema>) -> RuleClass {
-    let mut all_attributes = base_rule_attributes(RuleClassKind::Ordinary);
+pub fn native_rule_class(name: &str, attributes: Vec<AttributeSchema>) -> RuleClass {
+    native_rule_class_with_kind(name, RuleClassKind::Ordinary, attributes)
+}
+
+pub fn native_rule_class_with_kind(
+    name: &str,
+    kind: RuleClassKind,
+    mut attributes: Vec<AttributeSchema>,
+) -> RuleClass {
+    let mut all_attributes = base_rule_attributes(kind);
     all_attributes.append(&mut attributes);
     RuleClass {
         id: RuleClassId::Native(name.to_owned()),
         attributes: all_attributes,
-        kind: RuleClassKind::Ordinary,
+        kind,
         native_permissive: true,
     }
 }

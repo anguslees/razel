@@ -31,6 +31,15 @@ fn rule_types_command() -> Command {
     command
 }
 
+fn native_rule_inputs_command() -> Command {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
+    command.current_dir(format!(
+        "{}/tests/fixtures/native_rule_inputs",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    command
+}
+
 fn recursive_prefix_command() -> Command {
     let mut command = razel_command();
     command.current_dir(format!(
@@ -226,12 +235,45 @@ fn query_loads_all_public_attribute_types() {
             "source file //:BUILD.bazel\n",
             "sample_binary rule //:binary\n",
             "source file //:missing_dep.txt\n",
+            "source file //:missing_key_dep.txt\n",
             "source file //:missing_list_dep.txt\n",
+            "source file //:missing_list_dict_dep.txt\n",
+            "source file //:missing_string_keyed_dep.txt\n",
             "sample_test rule //:test\n",
             "all_types_rule rule //:typed\n",
             "generated file //:typed.out\n",
             "generated file //:typed_a.out\n",
             "generated file //:typed_b.out\n",
+        ));
+}
+
+#[test]
+fn query_discovers_sources_from_native_rule_attributes() {
+    native_rule_inputs_command()
+        .args(["query", "--output=label_kind", "//:*"])
+        .assert()
+        .success()
+        .stdout(concat!(
+            "source file //:BUILD.bazel\n",
+            "cc_binary rule //:app\n",
+            "source file //:app.data\n",
+            "source file //:compiler.in\n",
+            "source file //:filegroup.data\n",
+            "source file //:filegroup.src\n",
+            "filegroup rule //:files\n",
+            "source file //:lib.cc\n",
+            "source file //:lib.data\n",
+            "source file //:lib.def\n",
+            "source file //:lib.h\n",
+            "source file //:lib.inc\n",
+            "cc_library rule //:library\n",
+            "source file //:linker.in\n",
+            "source file //:linkstamp.cc\n",
+            "source file //:main.cc\n",
+            "source file //:module.cppm\n",
+            "sh_binary rule //:script\n",
+            "source file //:script.data\n",
+            "source file //:script.sh\n",
         ));
 }
 
@@ -242,6 +284,16 @@ fn recursive_query_does_not_require_prefix_package() {
         .assert()
         .success()
         .stdout("//foo/bar:descendant\n");
+}
+
+#[test]
+fn recursive_query_streams_results_before_a_late_package_error() {
+    fixture_command("recursive_streaming")
+        .args(["query", "//..."])
+        .assert()
+        .failure()
+        .stdout("//a:early\n")
+        .stderr(predicate::str::contains("missing.bzl"));
 }
 
 #[test]
