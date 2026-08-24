@@ -32,7 +32,7 @@ fn rule_types_command() -> Command {
 }
 
 fn native_rule_inputs_command() -> Command {
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("razel"));
+    let mut command = razel_command();
     command.current_dir(format!(
         "{}/tests/fixtures/native_rule_inputs",
         env!("CARGO_MANIFEST_DIR")
