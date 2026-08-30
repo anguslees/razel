@@ -5,7 +5,7 @@ module(
 
 bazel_dep(name = "llvm", version = "0.8.18")
 bazel_dep(name = "platforms", version = "1.1.0")
-bazel_dep(name = "rules_rs", version = "0.0.106")
+bazel_dep(name = "rules_rs", version = "0.0.107")
 bazel_dep(name = "zstd", version = "1.5.7.bcr.1")
 
 _PLATFORM_TRIPLES = [
