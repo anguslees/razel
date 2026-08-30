@@ -1,0 +1,55 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+load("@rules_rs//rs:rust_test.bzl", "rust_test")
+
+_INTEGRATION_TEST_DEPS = all_crate_deps(
+    normal = True,
+    normal_dev = True,
+)
+
+rust_binary(
+    name = "razel",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_root = "src/main.rs",
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "unit_tests",
+    aliases = aliases(),
+    crate = ":razel",
+    size = "small",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_test(
+    name = "cli_tests",
+    srcs = ["tests/cli.rs"],
+    aliases = aliases(),
+    data = [":razel"],
+    rustc_env = {
+        "CARGO_BIN_EXE_razel": "$(rootpath :razel)",
+    },
+    size = "small",
+    version = "0.1.0",
+    deps = _INTEGRATION_TEST_DEPS,
+)
+
+rust_test(
+    name = "query_tests",
+    srcs = ["tests/query.rs"],
+    aliases = aliases(),
+    data = [":razel"] + glob([
+        "examples/basic/**",
+        "tests/fixtures/**",
+    ]),
+    rustc_env = {
+        "CARGO_BIN_EXE_razel": "$(rootpath :razel)",
+        "CARGO_MANIFEST_DIR": ".",
+    },
+    size = "small",
+    version = "0.1.0",
+    deps = _INTEGRATION_TEST_DEPS,
+)
