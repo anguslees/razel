@@ -7,6 +7,7 @@ use chumsky::span::{SimpleSpan, Spanned};
 use clap::ValueEnum;
 use futures::stream::{self, BoxStream, StreamExt};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
@@ -21,6 +22,100 @@ pub enum QueryOutput {
 
 pub type QueryResult = Result<ExpandedTarget, String>;
 pub type QueryStream<'a> = BoxStream<'a, QueryResult>;
+
+type RawQueryParserError<'src> = Rich<'src, char, SimpleSpan<usize>, String>;
+type OwnedQueryParserError = RawQueryParserError<'static>;
+
+#[derive(Debug)]
+struct QueryParserError(OwnedQueryParserError);
+
+impl fmt::Display for QueryParserError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl std::error::Error for QueryParserError {}
+
+#[derive(Debug)]
+pub struct QuerySyntaxError {
+    errors: Vec<QueryParserError>,
+}
+
+impl<'src> From<Vec<RawQueryParserError<'src>>> for QuerySyntaxError {
+    fn from(errors: Vec<RawQueryParserError<'src>>) -> Self {
+        Self {
+            errors: errors
+                .into_iter()
+                .map(|error| QueryParserError(error.into_owned()))
+                .collect(),
+        }
+    }
+}
+
+impl fmt::Display for QuerySyntaxError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Failed to parse query: ")?;
+        for (index, error) in self.errors.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str("\n")?;
+            }
+            fmt::Display::fmt(error, formatter)?;
+        }
+        formatter.write_str("\nSee https://bazel.build/reference/query for syntax")
+    }
+}
+
+impl std::error::Error for QuerySyntaxError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.errors.first().map(|error| error as _)
+    }
+}
+
+#[derive(Debug)]
+pub enum QueryError {
+    Syntax(QuerySyntaxError),
+    Evaluation(anyhow::Error),
+    Output(std::io::Error),
+}
+
+impl fmt::Display for QueryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syntax(error) => error.fmt(formatter),
+            Self::Evaluation(error) => write!(formatter, "{error:#}"),
+            Self::Output(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for QueryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Syntax(error) => Some(error),
+            Self::Evaluation(error) => Some(error.as_ref()),
+            Self::Output(error) => Some(error),
+        }
+    }
+}
+
+impl From<QuerySyntaxError> for QueryError {
+    fn from(error: QuerySyntaxError) -> Self {
+        Self::Syntax(error)
+    }
+}
+
+impl From<anyhow::Error> for QueryError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Evaluation(error)
+    }
+}
+
+impl From<std::io::Error> for QueryError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Output(error)
+    }
+}
 
 #[derive(Clone)]
 pub struct QueryContext<'a> {
@@ -254,22 +349,18 @@ pub async fn query<W>(
     options: Arc<InvocationOptions>,
     output: QueryOutput,
     query: &str,
-) -> anyhow::Result<()>
+) -> Result<(), QueryError>
 where
     W: AsyncWrite + Unpin,
 {
-    let workspace = Workspace::new(".", options).await?;
+    let ast = parser()
+        .parse(query)
+        .into_result()
+        .map_err(QuerySyntaxError::from)?;
 
-    let ast = parser().parse(query).into_result().map_err(|errs| {
-        anyhow::anyhow!(
-            "Failed to parse query: {}\nSee https://bazel.build/reference/query for syntax",
-            errs.into_iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    })?;
-
+    let workspace = Workspace::new(".", options)
+        .await
+        .map_err(|error| QueryError::Evaluation(error.into()))?;
     let context = QueryContext::new(workspace);
     let mut result = ast.inner.eval(&context);
     while let Some(target) = result.next().await {
@@ -306,6 +397,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn query_syntax_error_preserves_first_parser_error() {
+        let error = parser()
+            .parse("(")
+            .into_result()
+            .map_err(QuerySyntaxError::from)
+            .unwrap_err();
+
+        assert!(error.to_string().starts_with("Failed to parse query: "));
+        assert!(error.source().is_some());
+    }
 
     fn parse(input: &str) -> Expr<'_> {
         parser()
