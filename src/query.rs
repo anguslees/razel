@@ -75,6 +75,7 @@ impl std::error::Error for QuerySyntaxError {
 #[derive(Debug)]
 pub enum QueryError {
     Syntax(QuerySyntaxError),
+    NotInWorkspace(std::io::Error),
     Evaluation(anyhow::Error),
     Output(std::io::Error),
 }
@@ -83,6 +84,7 @@ impl fmt::Display for QueryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Syntax(error) => error.fmt(formatter),
+            Self::NotInWorkspace(error) => error.fmt(formatter),
             Self::Evaluation(error) => write!(formatter, "{error:#}"),
             Self::Output(error) => error.fmt(formatter),
         }
@@ -93,6 +95,7 @@ impl std::error::Error for QueryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Syntax(error) => Some(error),
+            Self::NotInWorkspace(error) => Some(error),
             Self::Evaluation(error) => Some(error.as_ref()),
             Self::Output(error) => Some(error),
         }
@@ -358,9 +361,13 @@ where
         .into_result()
         .map_err(QuerySyntaxError::from)?;
 
-    let workspace = Workspace::new(".", options)
-        .await
-        .map_err(|error| QueryError::Evaluation(error.into()))?;
+    let workspace = Workspace::new(".", options).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            QueryError::NotInWorkspace(error)
+        } else {
+            QueryError::Evaluation(error.into())
+        }
+    })?;
     let context = QueryContext::new(workspace);
     let mut result = ast.inner.eval(&context);
     while let Some(target) = result.next().await {

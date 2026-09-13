@@ -95,6 +95,7 @@ fn verify_cli() {
 enum RazelError {
     Cli(clap::Error),
     BuildFailure(anyhow::Error),
+    CommandLineError(anyhow::Error),
     QuerySyntax(query::QuerySyntaxError),
     QueryFailure(anyhow::Error),
     Interrupted(anyhow::Error),
@@ -152,7 +153,9 @@ impl RazelError {
     fn exit_code(&self) -> BazelExitCode {
         match self {
             Self::Cli(error) if error.exit_code() == 0 => BazelExitCode::Success,
-            Self::Cli(_) | Self::QuerySyntax(_) => BazelExitCode::CommandLineError,
+            Self::Cli(_) | Self::CommandLineError(_) | Self::QuerySyntax(_) => {
+                BazelExitCode::CommandLineError
+            }
             Self::QueryFailure(_) => BazelExitCode::AnalysisFailure,
             Self::BuildFailure(_) => BazelExitCode::BuildFailure,
             Self::Interrupted(_) => BazelExitCode::Interrupted,
@@ -184,6 +187,7 @@ impl fmt::Display for RazelError {
         match self {
             Self::Cli(error) => error.fmt(formatter),
             Self::BuildFailure(error)
+            | Self::CommandLineError(error)
             | Self::QueryFailure(error)
             | Self::Interrupted(error)
             | Self::LocalEnvironmentalError(error) => write!(formatter, "{error:#}"),
@@ -198,6 +202,7 @@ impl std::error::Error for RazelError {
         match self {
             Self::Cli(error) => Some(error),
             Self::BuildFailure(error)
+            | Self::CommandLineError(error)
             | Self::QueryFailure(error)
             | Self::Interrupted(error)
             | Self::LocalEnvironmentalError(error) => Some(error.as_ref()),
@@ -298,6 +303,9 @@ async fn run() -> Result<(), RazelError> {
                 .await
                 .map_err(|error| match error {
                     query::QueryError::Syntax(error) => RazelError::QuerySyntax(error),
+                    query::QueryError::NotInWorkspace(error) => {
+                        RazelError::CommandLineError(error.into())
+                    }
                     query::QueryError::Evaluation(error) => RazelError::QueryFailure(error),
                     query::QueryError::Output(error) => {
                         RazelError::LocalEnvironmentalError(error.into())

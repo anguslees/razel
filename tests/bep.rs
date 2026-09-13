@@ -110,6 +110,23 @@ fn reports_command_line_errors() {
 }
 
 #[test]
+fn reports_no_workspace_as_command_line_error() {
+    let temp = TempDir::new().unwrap();
+    let json = temp.path().join("no-workspace.json");
+    let binary = fs::canonicalize(assert_cmd::cargo::cargo_bin!("razel")).unwrap();
+
+    Command::new(binary)
+        .current_dir(temp.path())
+        .arg("query")
+        .arg("//:all")
+        .arg(format!("--build_event_json_file={}", json.display()))
+        .assert()
+        .code(2);
+
+    assert_command_line_error(&json);
+}
+
+#[test]
 fn repeated_output_flag_uses_last_path() {
     let temp = TempDir::new().unwrap();
     let first = temp.path().join("first.json");
