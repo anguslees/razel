@@ -150,6 +150,17 @@ impl BazelExitCode {
 }
 
 impl RazelError {
+    fn from_query(error: query::QueryError) -> Self {
+        match error {
+            query::QueryError::Syntax(error) => Self::QuerySyntax(error),
+            query::QueryError::NotInWorkspace(error) => Self::CommandLineError(error.into()),
+            query::QueryError::Environment(error) | query::QueryError::Output(error) => {
+                Self::LocalEnvironmentalError(error.into())
+            }
+            query::QueryError::Evaluation(error) => Self::QueryFailure(error),
+        }
+    }
+
     fn exit_code(&self) -> BazelExitCode {
         match self {
             Self::Cli(error) if error.exit_code() == 0 => BazelExitCode::Success,
@@ -301,16 +312,7 @@ async fn run() -> Result<(), RazelError> {
                 query: query_str,
             } => query::query(&mut stdout, options, *output, query_str)
                 .await
-                .map_err(|error| match error {
-                    query::QueryError::Syntax(error) => RazelError::QuerySyntax(error),
-                    query::QueryError::NotInWorkspace(error) => {
-                        RazelError::CommandLineError(error.into())
-                    }
-                    query::QueryError::Evaluation(error) => RazelError::QueryFailure(error),
-                    query::QueryError::Output(error) => {
-                        RazelError::LocalEnvironmentalError(error.into())
-                    }
-                }),
+                .map_err(RazelError::from_query),
         }
     };
 

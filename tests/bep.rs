@@ -126,6 +126,21 @@ fn reports_no_workspace_as_command_line_error() {
     assert_command_line_error(&json);
 }
 
+#[cfg(unix)]
+#[test]
+fn workspace_io_failure_is_local_environmental_error() {
+    let temp = TempDir::new().unwrap();
+    std::os::unix::fs::symlink("MODULE.bazel", temp.path().join("MODULE.bazel")).unwrap();
+    let binary = fs::canonicalize(assert_cmd::cargo::cargo_bin!("razel")).unwrap();
+
+    Command::new(binary)
+        .current_dir(temp.path())
+        .arg("query")
+        .arg("//:all")
+        .assert()
+        .code(36);
+}
+
 #[test]
 fn repeated_output_flag_uses_last_path() {
     let temp = TempDir::new().unwrap();

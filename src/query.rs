@@ -76,6 +76,7 @@ impl std::error::Error for QuerySyntaxError {
 pub enum QueryError {
     Syntax(QuerySyntaxError),
     NotInWorkspace(std::io::Error),
+    Environment(std::io::Error),
     Evaluation(anyhow::Error),
     Output(std::io::Error),
 }
@@ -85,6 +86,7 @@ impl fmt::Display for QueryError {
         match self {
             Self::Syntax(error) => error.fmt(formatter),
             Self::NotInWorkspace(error) => error.fmt(formatter),
+            Self::Environment(error) => error.fmt(formatter),
             Self::Evaluation(error) => write!(formatter, "{error:#}"),
             Self::Output(error) => error.fmt(formatter),
         }
@@ -96,6 +98,7 @@ impl std::error::Error for QueryError {
         match self {
             Self::Syntax(error) => Some(error),
             Self::NotInWorkspace(error) => Some(error),
+            Self::Environment(error) => Some(error),
             Self::Evaluation(error) => Some(error.as_ref()),
             Self::Output(error) => Some(error),
         }
@@ -117,6 +120,14 @@ impl From<anyhow::Error> for QueryError {
 impl From<std::io::Error> for QueryError {
     fn from(error: std::io::Error) -> Self {
         Self::Output(error)
+    }
+}
+
+fn workspace_error(error: std::io::Error) -> QueryError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        QueryError::NotInWorkspace(error)
+    } else {
+        QueryError::Environment(error)
     }
 }
 
@@ -361,13 +372,9 @@ where
         .into_result()
         .map_err(QuerySyntaxError::from)?;
 
-    let workspace = Workspace::new(".", options).await.map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            QueryError::NotInWorkspace(error)
-        } else {
-            QueryError::Evaluation(error.into())
-        }
-    })?;
+    let workspace = Workspace::new(".", options)
+        .await
+        .map_err(workspace_error)?;
     let context = QueryContext::new(workspace);
     let mut result = ast.inner.eval(&context);
     while let Some(target) = result.next().await {
@@ -416,6 +423,18 @@ mod tests {
 
         assert!(error.to_string().starts_with("Failed to parse query: "));
         assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn workspace_errors_distinguish_absence_from_environment_failures() {
+        assert!(matches!(
+            workspace_error(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            QueryError::NotInWorkspace(_)
+        ));
+        assert!(matches!(
+            workspace_error(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            QueryError::Environment(_)
+        ));
     }
 
     fn parse(input: &str) -> Expr<'_> {
