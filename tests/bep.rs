@@ -41,7 +41,7 @@ fn writes_compatible_binary_json_and_text_streams() {
     assert!(matches!(id_kind(&events[0]), Some(EventId::Started(_))));
     assert_eq!(events[0].children.len(), 3);
     for (announced, event) in events[0].children.iter().zip(&events[1..]) {
-        assert!(event.id.as_ref() == Some(announced));
+        assert_eq!(event.id.as_ref(), Some(announced));
     }
     let Some(Payload::Started(started)) = events[0].payload.as_ref() else {
         panic!("first event should be BuildStarted");
