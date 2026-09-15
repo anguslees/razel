@@ -194,6 +194,7 @@ fn reports_query_analysis_failure() {
 #[cfg(unix)]
 #[test]
 fn flushes_interrupted_stream() {
+    use std::fmt::Write;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
@@ -206,7 +207,7 @@ fn flushes_interrupted_stream() {
     .unwrap();
     let mut build = String::from("exports_files([\n");
     for index in 0..2_000 {
-        build.push_str(&format!("    \"target_{index}_{}\",\n", "x".repeat(180)));
+        writeln!(build, "    \"target_{index}_{}\",", "x".repeat(180)).unwrap();
     }
     build.push_str("])\n");
     fs::write(temp.path().join("BUILD.bazel"), build).unwrap();
