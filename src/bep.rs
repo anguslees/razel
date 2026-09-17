@@ -32,6 +32,7 @@ use prost_types::Timestamp;
 const DESCRIPTOR_BYTES: &[u8] = include_bytes!(env!("RAZEL_BEP_DESCRIPTOR_PATH"));
 
 const TRACE_TARGET: &str = "razel::bep";
+const EVENT_QUEUE_CAPACITY: usize = 1_024;
 
 pub(crate) struct BepLayer {
     state: Arc<Mutex<State>>,
@@ -64,12 +65,17 @@ struct OutputPaths {
 
 struct State {
     invocation: Invocation,
-    sender: mpsc::UnboundedSender<proto::BuildEvent>,
+    event_queue: EventQueue,
     started: bool,
     command_line_emitted: bool,
     options_parsed_emitted: bool,
     pattern_emitted: bool,
     finished: bool,
+}
+
+struct EventQueue {
+    sender: mpsc::Sender<proto::BuildEvent>,
+    overflow_reported: bool,
 }
 
 enum Sink {
@@ -106,7 +112,7 @@ impl BepLayer {
 
         let invocation = Invocation::new(cli, matches).await?;
         let writer = Writer::new(paths).await?;
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let state = Arc::new(Mutex::new(State::new(invocation, sender)));
         Ok((
@@ -214,7 +220,7 @@ where
             _ => None,
         };
         if let Some(event) = build_event {
-            let _ = state.sender.send(event);
+            state.event_queue.send(event);
         }
     }
 }
@@ -354,10 +360,10 @@ impl OutputPaths {
 }
 
 impl State {
-    fn new(invocation: Invocation, sender: mpsc::UnboundedSender<proto::BuildEvent>) -> Self {
+    fn new(invocation: Invocation, sender: mpsc::Sender<proto::BuildEvent>) -> Self {
         Self {
             invocation,
-            sender,
+            event_queue: EventQueue::new(sender),
             started: false,
             command_line_emitted: false,
             options_parsed_emitted: false,
@@ -367,7 +373,7 @@ impl State {
     }
 
     fn new_for_command_line_error(invocation: Invocation) -> Self {
-        let (sender, _receiver) = mpsc::unbounded_channel();
+        let (sender, _receiver) = mpsc::channel(1);
         Self::new(invocation, sender)
     }
 
@@ -471,6 +477,28 @@ impl State {
     }
 }
 
+impl EventQueue {
+    fn new(sender: mpsc::Sender<proto::BuildEvent>) -> Self {
+        Self {
+            sender,
+            overflow_reported: false,
+        }
+    }
+
+    fn send(&mut self, event: proto::BuildEvent) {
+        match self.sender.try_send(event) {
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                if !self.overflow_reported {
+                    self.overflow_reported = true;
+                    // This runs inside a tracing callback, so another tracing event would recurse.
+                    eprintln!("WARNING: BEP event queue is full; dropping events");
+                }
+            }
+        }
+    }
+}
+
 impl Writer {
     async fn new(paths: OutputPaths) -> Result<Self> {
         let pool = DescriptorPool::decode(DESCRIPTOR_BYTES)
@@ -499,7 +527,7 @@ impl Writer {
 
     async fn run(
         mut self,
-        mut receiver: mpsc::UnboundedReceiver<proto::BuildEvent>,
+        mut receiver: mpsc::Receiver<proto::BuildEvent>,
         mut shutdown: oneshot::Receiver<()>,
     ) -> Result<()> {
         loop {
@@ -777,4 +805,34 @@ pub(crate) fn finished(exit_code: BazelExitCode) {
         bep_event = "finished",
         exit_code = i64::from(exit_code.code())
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_queue_drops_events_at_capacity() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut queue = EventQueue::new(sender);
+
+        queue.send(proto::BuildEvent::default());
+        queue.send(proto::BuildEvent {
+            last_message: true,
+            ..Default::default()
+        });
+
+        assert!(!receiver.try_recv().unwrap().last_message);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(queue.overflow_reported);
+
+        queue.send(proto::BuildEvent {
+            last_message: true,
+            ..Default::default()
+        });
+        assert!(receiver.try_recv().unwrap().last_message);
+    }
 }
