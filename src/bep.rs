@@ -75,7 +75,6 @@ struct State {
 
 struct EventQueue {
     sender: mpsc::Sender<proto::BuildEvent>,
-    overflow_reported: bool,
 }
 
 enum Sink {
@@ -479,23 +478,15 @@ impl State {
 
 impl EventQueue {
     fn new(sender: mpsc::Sender<proto::BuildEvent>) -> Self {
-        Self {
-            sender,
-            overflow_reported: false,
-        }
+        Self { sender }
     }
 
-    fn send(&mut self, event: proto::BuildEvent) {
-        match self.sender.try_send(event) {
-            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                if !self.overflow_reported {
-                    self.overflow_reported = true;
-                    // This runs inside a tracing callback, so another tracing event would recurse.
-                    eprintln!("WARNING: BEP event queue is full; dropping events");
-                }
-            }
-        }
+    fn send(&self, event: proto::BuildEvent) {
+        // on_event is synchronous but runs inside Tokio, so hand off other runtime work before
+        // blocking this worker until the asynchronous writer frees queue capacity.
+        tokio::task::block_in_place(|| {
+            let _ = self.sender.blocking_send(event);
+        });
     }
 }
 
@@ -811,28 +802,24 @@ pub(crate) fn finished(exit_code: BazelExitCode) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn event_queue_drops_events_at_capacity() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn event_queue_waits_for_capacity() {
         let (sender, mut receiver) = mpsc::channel(1);
-        let mut queue = EventQueue::new(sender);
+        let queue = EventQueue::new(sender);
 
         queue.send(proto::BuildEvent::default());
+        let receiver = tokio::spawn(async move {
+            let first = receiver.recv().await.unwrap();
+            let second = receiver.recv().await.unwrap();
+            (first, second)
+        });
         queue.send(proto::BuildEvent {
             last_message: true,
             ..Default::default()
         });
 
-        assert!(!receiver.try_recv().unwrap().last_message);
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        assert!(queue.overflow_reported);
-
-        queue.send(proto::BuildEvent {
-            last_message: true,
-            ..Default::default()
-        });
-        assert!(receiver.try_recv().unwrap().last_message);
+        let (first, second) = receiver.await.unwrap();
+        assert!(!first.last_message);
+        assert!(second.last_message);
     }
 }
