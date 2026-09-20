@@ -83,7 +83,10 @@ fn writes_compatible_binary_json_and_text_streams() {
 
     let text = fs::read_to_string(text).unwrap();
     assert_eq!(text.matches("event {\n").count(), 4);
-    assert!(text.contains("build_tool_version: \"0.1.0\""));
+    assert!(text.contains(&format!(
+        "build_tool_version: \"{}\"",
+        env!("CARGO_PKG_VERSION")
+    )));
     assert!(text.contains("overall_success: true"));
 }
 
