@@ -334,7 +334,6 @@ async fn run() -> Result<(), RazelError> {
     fastrace::flush();
     let bep_result = bep_handle
         .shutdown()
-        .await
         .map_err(RazelError::LocalEnvironmentalError);
 
     match (result, bep_result) {

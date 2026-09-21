@@ -6,13 +6,11 @@ use clap::parser::ValueSource;
 use clap::{ArgMatches, ValueEnum};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, SerializeOptions};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
@@ -32,15 +30,14 @@ use prost_types::Timestamp;
 const DESCRIPTOR_BYTES: &[u8] = include_bytes!(env!("RAZEL_BEP_DESCRIPTOR_PATH"));
 
 const TRACE_TARGET: &str = "razel::bep";
-const EVENT_QUEUE_CAPACITY: usize = 1_024;
+const OUTPUT_BUFFER_CAPACITY: usize = 64 * 1_024;
 
 pub(crate) struct BepLayer {
     state: Arc<Mutex<State>>,
 }
 
 pub(crate) struct BepHandle {
-    shutdown: Option<oneshot::Sender<()>>,
-    writer: Option<JoinHandle<Result<()>>>,
+    state: Option<Arc<Mutex<State>>>,
 }
 
 struct Invocation {
@@ -65,16 +62,13 @@ struct OutputPaths {
 
 struct State {
     invocation: Invocation,
-    event_queue: EventQueue,
+    writer: Writer,
+    writer_error: Option<std::io::Error>,
     started: bool,
     command_line_emitted: bool,
     options_parsed_emitted: bool,
     pattern_emitted: bool,
     finished: bool,
-}
-
-struct EventQueue {
-    sender: mpsc::Sender<proto::BuildEvent>,
 }
 
 enum Sink {
@@ -100,48 +94,30 @@ impl BepLayer {
     pub(crate) async fn new(cli: &Cli, matches: &ArgMatches) -> Result<(Option<Self>, BepHandle)> {
         let paths = OutputPaths::from_cli(cli);
         if paths.is_empty() {
-            return Ok((
-                None,
-                BepHandle {
-                    shutdown: None,
-                    writer: None,
-                },
-            ));
+            return Ok((None, BepHandle { state: None }));
         }
 
         let invocation = Invocation::new(cli, matches).await?;
-        let writer = Writer::new(paths).await?;
-        let (sender, receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
-        let (shutdown, shutdown_receiver) = oneshot::channel();
-        let state = Arc::new(Mutex::new(State::new(invocation, sender)));
+        let writer = Writer::new(paths)?;
+        let state = Arc::new(Mutex::new(State::new(invocation, writer)));
         Ok((
             Some(Self {
                 state: state.clone(),
             }),
-            BepHandle {
-                shutdown: Some(shutdown),
-                writer: Some(tokio::spawn(writer.run(receiver, shutdown_receiver))),
-            },
+            BepHandle { state: Some(state) },
         ))
     }
 }
 
 impl BepHandle {
-    pub(crate) async fn shutdown(mut self) -> Result<()> {
-        let Some(writer) = self.writer.take() else {
+    pub(crate) fn shutdown(mut self) -> Result<()> {
+        let Some(state) = self.state.take() else {
             return Ok(());
         };
-        let send_failed = self
-            .shutdown
-            .take()
-            .is_none_or(|shutdown| shutdown.send(()).is_err());
-        let result = writer
-            .await
-            .context("Build Event Protocol writer task failed")?;
-        if send_failed && result.is_ok() {
-            anyhow::bail!("Build Event Protocol writer stopped before shutdown");
-        }
-        result
+        state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Build Event Protocol state lock was poisoned"))?
+            .shutdown()
     }
 }
 
@@ -151,8 +127,9 @@ pub(crate) async fn report_command_line_error(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    let state = State::new_for_command_line_error(Invocation::for_command_line_error(args).await?);
-    let mut writer = Writer::new(paths).await?;
+    let invocation = Invocation::for_command_line_error(args).await?;
+    let writer = Writer::new(paths)?;
+    let mut state = State::new(invocation, writer);
     let events = [
         state.started_event(),
         state.command_line_event(),
@@ -160,15 +137,9 @@ pub(crate) async fn report_command_line_error(args: &[String]) -> Result<()> {
         state.finished_event(BazelExitCode::CommandLineError),
     ];
     for event in events {
-        writer
-            .write_event(&event)
-            .await
-            .context("failed to write Build Event Protocol output")?;
+        state.write_event(&event);
     }
-    writer
-        .shutdown()
-        .await
-        .context("failed to write Build Event Protocol output")
+    state.shutdown()
 }
 
 impl<S> Layer<S> for BepLayer
@@ -219,7 +190,7 @@ where
             _ => None,
         };
         if let Some(event) = build_event {
-            state.event_queue.send(event);
+            state.write_event(&event);
         }
     }
 }
@@ -359,10 +330,11 @@ impl OutputPaths {
 }
 
 impl State {
-    fn new(invocation: Invocation, sender: mpsc::Sender<proto::BuildEvent>) -> Self {
+    fn new(invocation: Invocation, writer: Writer) -> Self {
         Self {
             invocation,
-            event_queue: EventQueue::new(sender),
+            writer,
+            writer_error: None,
             started: false,
             command_line_emitted: false,
             options_parsed_emitted: false,
@@ -371,9 +343,21 @@ impl State {
         }
     }
 
-    fn new_for_command_line_error(invocation: Invocation) -> Self {
-        let (sender, _receiver) = mpsc::channel(1);
-        Self::new(invocation, sender)
+    fn write_event(&mut self, event: &proto::BuildEvent) {
+        if self.writer_error.is_none() {
+            self.writer_error = self.writer.write_event(event).err();
+        }
+    }
+
+    fn shutdown(&mut self) -> Result<()> {
+        let flush_error = self.writer.flush().err();
+        if let Some(error) = self.writer_error.take() {
+            return Err(error).context("failed to write Build Event Protocol output");
+        }
+        if let Some(error) = flush_error {
+            return Err(error).context("failed to flush Build Event Protocol output");
+        }
+        Ok(())
     }
 
     // Bazel still populates the deprecated millisecond field for older BEP consumers.
@@ -476,22 +460,8 @@ impl State {
     }
 }
 
-impl EventQueue {
-    fn new(sender: mpsc::Sender<proto::BuildEvent>) -> Self {
-        Self { sender }
-    }
-
-    fn send(&self, event: proto::BuildEvent) {
-        // on_event is synchronous but runs inside Tokio, so hand off other runtime work before
-        // blocking this worker until the asynchronous writer frees queue capacity.
-        tokio::task::block_in_place(|| {
-            let _ = self.sender.blocking_send(event);
-        });
-    }
-}
-
 impl Writer {
-    async fn new(paths: OutputPaths) -> Result<Self> {
+    fn new(paths: OutputPaths) -> Result<Self> {
         let pool = DescriptorPool::decode(DESCRIPTOR_BYTES)
             .context("failed to decode the Build Event Protocol descriptor set")?;
         let descriptor = pool
@@ -500,13 +470,13 @@ impl Writer {
         // Bazel accepts its binary, JSON, and text file flags simultaneously.
         let mut sinks = Vec::new();
         if let Some(path) = paths.binary {
-            sinks.push(Sink::Binary(open(&path).await?));
+            sinks.push(Sink::Binary(open(&path)?));
         }
         if let Some(path) = paths.json {
-            sinks.push(Sink::Json(open(&path).await?));
+            sinks.push(Sink::Json(open(&path)?));
         }
         if let Some(path) = paths.text {
-            sinks.push(Sink::Text(open(&path).await?));
+            sinks.push(Sink::Text(open(&path)?));
         }
         Ok(Self {
             binary_buffer: BytesMut::new(),
@@ -516,34 +486,7 @@ impl Writer {
         })
     }
 
-    async fn run(
-        mut self,
-        mut receiver: mpsc::Receiver<proto::BuildEvent>,
-        mut shutdown: oneshot::Receiver<()>,
-    ) -> Result<()> {
-        loop {
-            tokio::select! {
-                event = receiver.recv() => {
-                    let Some(event) = event else {
-                        return self.shutdown().await;
-                    };
-                    self.write_event(&event)
-                    .await
-                    .context("failed to write Build Event Protocol output")?;
-                }
-                _ = &mut shutdown => {
-                    while let Ok(event) = receiver.try_recv() {
-                        self.write_event(&event)
-                            .await
-                            .context("failed to write Build Event Protocol output")?;
-                    }
-                    return self.shutdown().await;
-                }
-            }
-        }
-    }
-
-    async fn write_event(&mut self, event: &proto::BuildEvent) -> std::io::Result<()> {
+    fn write_event(&mut self, event: &proto::BuildEvent) -> std::io::Result<()> {
         self.message_buffer.clear();
         event
             .encode(&mut self.message_buffer)
@@ -555,29 +498,23 @@ impl Writer {
             .encode_length_delimited(&mut self.binary_buffer)
             .map_err(std::io::Error::other)?;
         for sink in &mut self.sinks {
-            sink.write_event(&self.binary_buffer, &dynamic).await?;
+            sink.write_event(&self.binary_buffer, &dynamic)?;
         }
         Ok(())
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    fn flush(&mut self) -> std::io::Result<()> {
         for sink in &mut self.sinks {
-            sink.shutdown()
-                .await
-                .context("failed to close Build Event Protocol output")?;
+            sink.flush()?;
         }
         Ok(())
     }
 }
 
 impl Sink {
-    async fn write_event(
-        &mut self,
-        binary: &[u8],
-        dynamic: &DynamicMessage,
-    ) -> std::io::Result<()> {
+    fn write_event(&mut self, binary: &[u8], dynamic: &DynamicMessage) -> std::io::Result<()> {
         match self {
-            Self::Binary(writer) => writer.write_all(binary).await,
+            Self::Binary(writer) => writer.write_all(binary),
             Self::Json(writer) => {
                 let mut encoded = Vec::new();
                 let mut serializer = serde_json::Serializer::new(&mut encoded);
@@ -585,30 +522,27 @@ impl Sink {
                     .serialize_with_options(&mut serializer, &SerializeOptions::new())
                     .map_err(std::io::Error::other)?;
                 encoded.push(b'\n');
-                writer.write_all(&encoded).await
+                writer.write_all(&encoded)
             }
             Self::Text(writer) => {
                 let message = format!("{dynamic:#}");
-                writer.write_all(b"event {\n").await?;
-                writer.write_all(message.as_bytes()).await?;
-                writer.write_all(b"\n}\n\n").await
+                writer.write_all(b"event {\n")?;
+                writer.write_all(message.as_bytes())?;
+                writer.write_all(b"\n}\n\n")
             }
         }
     }
 
-    async fn shutdown(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            Self::Binary(writer) | Self::Json(writer) | Self::Text(writer) => {
-                writer.shutdown().await
-            }
+            Self::Binary(writer) | Self::Json(writer) | Self::Text(writer) => writer.flush(),
         }
     }
 }
 
-async fn open(path: &Path) -> Result<BufWriter<File>> {
+fn open(path: &Path) -> Result<BufWriter<File>> {
     File::create(path)
-        .await
-        .map(BufWriter::new)
+        .map(|file| BufWriter::with_capacity(OUTPUT_BUFFER_CAPACITY, file))
         .with_context(|| format!("failed to create BEP output file {}", path.display()))
 }
 
@@ -796,30 +730,4 @@ pub(crate) fn finished(exit_code: BazelExitCode) {
         bep_event = "finished",
         exit_code = i64::from(exit_code.code())
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn event_queue_waits_for_capacity() {
-        let (sender, mut receiver) = mpsc::channel(1);
-        let queue = EventQueue::new(sender);
-
-        queue.send(proto::BuildEvent::default());
-        let receiver = tokio::spawn(async move {
-            let first = receiver.recv().await.unwrap();
-            let second = receiver.recv().await.unwrap();
-            (first, second)
-        });
-        queue.send(proto::BuildEvent {
-            last_message: true,
-            ..Default::default()
-        });
-
-        let (first, second) = receiver.await.unwrap();
-        assert!(!first.last_message);
-        assert!(second.last_message);
-    }
 }
