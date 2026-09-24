@@ -238,13 +238,14 @@ fn flushes_interrupted_stream() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(
-        std::process::Command::new("kill")
-            .arg("-TERM")
-            .arg(child.id().to_string())
-            .status()
-            .unwrap()
-            .success()
+    let pid = libc::pid_t::try_from(child.id()).unwrap();
+    // SAFETY: pid identifies the live child process, and SIGTERM requires no pointer arguments.
+    let result = unsafe { libc::kill(pid, libc::SIGTERM) };
+    assert_eq!(
+        result,
+        0,
+        "failed to send SIGTERM: {}",
+        std::io::Error::last_os_error()
     );
 
     let deadline = Instant::now() + Duration::from_secs(5);
