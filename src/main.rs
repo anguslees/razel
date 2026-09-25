@@ -319,10 +319,15 @@ async fn run() -> Result<(), RazelError> {
     let result = tokio::select! {
         result = command => result,
         signal = shutdown_signal.recv() => {
-            bep::pattern_aborted();
             match signal {
-                Ok(()) => Err(RazelError::Interrupted(anyhow::anyhow!("Command interrupted"))),
-                Err(error) => Err(RazelError::LocalEnvironmentalError(error.into())),
+                Ok(()) => {
+                    bep::pattern_interrupted();
+                    Err(RazelError::Interrupted(anyhow::anyhow!("Command interrupted")))
+                }
+                Err(error) => {
+                    bep::pattern_aborted();
+                    Err(RazelError::LocalEnvironmentalError(error.into()))
+                }
             }
         }
     };

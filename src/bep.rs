@@ -179,9 +179,16 @@ where
                 state.options_parsed_emitted = true;
                 Some(state.options_parsed_event())
             }
-            "pattern_aborted" if state.started && !state.pattern_emitted && !state.finished => {
+            event @ ("pattern_aborted" | "pattern_interrupted")
+                if state.started && !state.pattern_emitted && !state.finished =>
+            {
                 state.pattern_emitted = true;
-                state.pattern_aborted_event()
+                let reason = if event == "pattern_interrupted" {
+                    proto::aborted::AbortReason::UserInterrupted
+                } else {
+                    proto::aborted::AbortReason::Incomplete
+                };
+                state.pattern_aborted_event(reason)
             }
             "finished" if state.started && !state.finished => {
                 state.finished = true;
@@ -420,17 +427,25 @@ impl State {
         }
     }
 
-    fn pattern_aborted_event(&self) -> Option<proto::BuildEvent> {
+    fn pattern_aborted_event(
+        &self,
+        reason: proto::aborted::AbortReason,
+    ) -> Option<proto::BuildEvent> {
         if self.invocation.patterns.is_empty() {
             return None;
         }
+        let description = if reason == proto::aborted::AbortReason::UserInterrupted {
+            "command interrupted"
+        } else {
+            "target pattern expansion is not implemented"
+        };
         Some(proto::BuildEvent {
             id: Some(pattern_id(&self.invocation.patterns)),
             children: Vec::new(),
             last_message: false,
             payload: Some(proto::build_event::Payload::Aborted(proto::Aborted {
-                reason: proto::aborted::AbortReason::Incomplete.into(),
-                description: "target pattern expansion is not implemented".to_owned(),
+                reason: reason.into(),
+                description: description.to_owned(),
             })),
         })
     }
@@ -724,10 +739,67 @@ pub(crate) fn pattern_aborted() {
     tracing::info!(target: TRACE_TARGET, bep_event = "pattern_aborted");
 }
 
+pub(crate) fn pattern_interrupted() {
+    tracing::info!(target: TRACE_TARGET, bep_event = "pattern_interrupted");
+}
+
 pub(crate) fn finished(exit_code: BazelExitCode) {
     tracing::info!(
         target: TRACE_TARGET,
         bep_event = "finished",
         exit_code = i64::from(exit_code.code())
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::prelude::*;
+
+    #[test]
+    fn interrupted_pattern_reports_user_interrupted() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let json = temp.path().join("interrupted.json");
+        let invocation = Invocation {
+            args: Vec::new(),
+            command: "build".to_owned(),
+            explicit_options: Vec::new(),
+            host: String::new(),
+            patterns: vec!["//:target".to_owned()],
+            start_time: timestamp_now(),
+            user: String::new(),
+            uuid: String::new(),
+            working_directory: String::new(),
+            workspace_directory: String::new(),
+        };
+        let writer = Writer::new(OutputPaths {
+            json: Some(json.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let state = Arc::new(Mutex::new(State::new(invocation, writer)));
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(BepLayer {
+                state: state.clone(),
+            }),
+            || {
+                started();
+                command_line();
+                options_parsed();
+                pattern_interrupted();
+                finished(BazelExitCode::Interrupted);
+            },
+        );
+        state.lock().unwrap().shutdown().unwrap();
+
+        let events = std::fs::read_to_string(json)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[3]["aborted"]["reason"], "USER_INTERRUPTED");
+        assert_eq!(events[3]["aborted"]["description"], "command interrupted");
+        assert_eq!(events[4]["finished"]["exitCode"]["code"], 8);
+    }
 }
