@@ -10,6 +10,7 @@ tokio = { version = "1", features = [
     "macros",
     "io-util",
     "fs",
+    "signal",
     "tracing",
     "io-std",
 ] }
@@ -22,6 +23,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1.0"
 erased-serde = "0.4"
 bazel-remote-apis = "0.29.0"
+bytes = "1"
 async-recursion = "1.1.1"
 futures = "0.3.31"
 tracing-indicatif = "0.3"
@@ -31,6 +33,19 @@ console-subscriber = "0.5.0"
 chumsky = { version = "0.13.0" }
 dynosaur = "0.3.0"
 async-stream = "0.3"
+prost = "0.14"
+prost-reflect = { version = "0.16", features = ["serde", "text-format"] }
+prost-types = "0.14"
+serde_json = "1.0"
+uuid = { version = "1.18", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3.2"
+protoc-gen-prost = "0.5"
 
 [dev-dependencies]
 assert_cmd = "2.0"

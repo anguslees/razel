@@ -76,10 +76,7 @@ fn package_entry_future(entry: &LoadedPackageEntry) -> Option<LoadedPackageFutur
 }
 
 impl Workspace {
-    pub async fn new(
-        start_dir: impl AsRef<Path>,
-        invocation_options: Arc<InvocationOptions>,
-    ) -> Result<Arc<Self>, std::io::Error> {
+    pub async fn find_root(start_dir: impl AsRef<Path>) -> std::io::Result<Option<PathBuf>> {
         let mut current_dir = std::path::absolute(start_dir)?;
         loop {
             if any_exists(
@@ -88,15 +85,24 @@ impl Workspace {
             )
             .await?
             {
-                break;
+                return Ok(Some(current_dir));
             }
             if !current_dir.pop() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Could not find MODULE.bazel or REPO.bazel in current or any parent directory",
-                ));
+                return Ok(None);
             }
         }
+    }
+
+    pub async fn new(
+        start_dir: impl AsRef<Path>,
+        invocation_options: Arc<InvocationOptions>,
+    ) -> Result<Arc<Self>, std::io::Error> {
+        let current_dir = Self::find_root(start_dir).await?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not find MODULE.bazel or REPO.bazel in current or any parent directory",
+            )
+        })?;
 
         let workspace = Arc::new(Self {
             path: current_dir.clone(),

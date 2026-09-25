@@ -1,40 +1,157 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_proto//proto:defs.bzl", "proto_descriptor_set", "proto_library")
 load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("@rules_rust_prost//:defs.bzl", "rust_prost_library", "rust_prost_toolchain")
 
 _INTEGRATION_TEST_DEPS = all_crate_deps(
     normal = True,
     normal_dev = True,
 )
 
+# Keep generated bindings on the same Prost crate instance as Razel's Cargo dependencies.
+rust_prost_toolchain(
+    name = "prost_toolchain_impl",
+    compile_well_known_types = False,
+    prost_plugin = "@crates//:protoc-gen-prost__protoc-gen-prost",
+    prost_runtime = "@crates//:prost",
+    prost_types = "@crates//:prost-types",
+    tonic_plugin_flag = "",
+)
+
+toolchain(
+    name = "prost_toolchain",
+    toolchain = ":prost_toolchain_impl",
+    toolchain_type = "@rules_rust_prost//:toolchain_type",
+)
+
+proto_library(
+    name = "action_cache_proto",
+    srcs = ["proto/src/main/protobuf/action_cache.proto"],
+    strip_import_prefix = "proto",
+)
+
+proto_library(
+    name = "option_filters_proto",
+    srcs = ["proto/src/main/protobuf/option_filters.proto"],
+    strip_import_prefix = "proto",
+)
+
+proto_library(
+    name = "command_line_proto",
+    srcs = ["proto/src/main/protobuf/command_line.proto"],
+    strip_import_prefix = "proto",
+    deps = [":option_filters_proto"],
+)
+
+proto_library(
+    name = "failure_details_proto",
+    srcs = ["proto/src/main/protobuf/failure_details.proto"],
+    strip_import_prefix = "proto",
+    deps = ["@protobuf//:descriptor_proto"],
+)
+
+proto_library(
+    name = "strategy_policy_proto",
+    srcs = ["proto/src/main/protobuf/strategy_policy.proto"],
+    strip_import_prefix = "proto",
+)
+
+proto_library(
+    name = "invocation_policy_proto",
+    srcs = ["proto/src/main/protobuf/invocation_policy.proto"],
+    strip_import_prefix = "proto",
+    deps = [":strategy_policy_proto"],
+)
+
+proto_library(
+    name = "package_load_metrics_proto",
+    srcs = ["proto/src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto"],
+    strip_import_prefix = "proto",
+    deps = ["@protobuf//:duration_proto"],
+)
+
+proto_library(
+    name = "build_event_stream_proto",
+    srcs = ["proto/src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto"],
+    strip_import_prefix = "proto",
+    deps = [
+        ":action_cache_proto",
+        ":command_line_proto",
+        ":failure_details_proto",
+        ":invocation_policy_proto",
+        ":package_load_metrics_proto",
+        "@protobuf//:any_proto",
+        "@protobuf//:duration_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_library(
+    name = "build_event_stream_rust_proto",
+    proto = ":build_event_stream_proto",
+)
+
+proto_descriptor_set(
+    name = "bep_descriptor_set",
+    deps = [":build_event_stream_proto"],
+)
+
 rust_binary(
     name = "razel",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
+    compile_data = [":bep_descriptor_set"],
     crate_root = "src/main.rs",
+    rustc_env = {
+        "RAZEL_BEP_DESCRIPTOR_PATH": "$(execpath :bep_descriptor_set)",
+    },
+    rustc_flags = [
+        "--cfg=bazel",
+        "--check-cfg=cfg(bazel)",
+        "--check-cfg=cfg(test)",
+    ],
     version = "0.1.0",
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + [":build_event_stream_rust_proto"],
 )
 
 rust_test(
     name = "unit_tests",
     aliases = aliases(),
+    compile_data = [":bep_descriptor_set"],
     crate = ":razel",
+    rustc_env = {
+        "RAZEL_BEP_DESCRIPTOR_PATH": "$(execpath :bep_descriptor_set)",
+    },
+    rustc_flags = [
+        "--cfg=bazel",
+        "--check-cfg=cfg(bazel)",
+        "--check-cfg=cfg(test)",
+    ],
     size = "small",
     deps = all_crate_deps(normal_dev = True),
 )
 
 rust_test(
     name = "cli_tests",
-    srcs = ["tests/cli.rs"],
+    srcs = [
+        "tests/bep.rs",
+        "tests/cli.rs",
+    ],
     aliases = aliases(),
+    crate_root = "tests/cli.rs",
     data = [":razel"],
     rustc_env = {
         "CARGO_BIN_EXE_razel": "$(rootpath :razel)",
     },
+    rustc_flags = [
+        "--cfg=bazel",
+        "--check-cfg=cfg(bazel)",
+        "--check-cfg=cfg(test)",
+    ],
     size = "small",
     version = "0.1.0",
-    deps = _INTEGRATION_TEST_DEPS,
+    deps = _INTEGRATION_TEST_DEPS + [":build_event_stream_rust_proto"],
 )
 
 rust_test(
