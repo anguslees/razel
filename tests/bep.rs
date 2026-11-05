@@ -95,6 +95,7 @@ fn reports_command_line_errors() {
     let temp = TempDir::new().unwrap();
     let clap_json = temp.path().join("clap-error.json");
     let query_json = temp.path().join("query-error.json");
+    let cquery_json = temp.path().join("cquery-error.json");
 
     Command::new(assert_cmd::cargo::cargo_bin!("razel"))
         .arg("query")
@@ -110,6 +111,18 @@ fn reports_command_line_errors() {
         .assert()
         .code(2);
     assert_command_line_error(&query_json);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("razel"))
+        .arg("cquery")
+        .arg("(")
+        .arg(format!("--build_event_json_file={}", cquery_json.display()))
+        .assert()
+        .code(2);
+    assert_command_line_error(&cquery_json);
+    assert_eq!(
+        read_json_events(&cquery_json)[0]["started"]["command"],
+        "cquery"
+    );
 }
 
 #[test]
@@ -127,6 +140,27 @@ fn reports_no_workspace_as_command_line_error() {
         .code(2);
 
     assert_command_line_error(&json);
+}
+
+#[test]
+fn query_file_read_failure_is_command_line_error() {
+    let temp = TempDir::new().unwrap();
+    let missing = temp.path().join("missing.query");
+    for command in ["query", "cquery"] {
+        let json = temp.path().join(format!("{command}.json"));
+        let assert = Command::new(assert_cmd::cargo::cargo_bin!("razel"))
+            .arg(command)
+            .arg(format!("--query_file={}", missing.display()))
+            .arg(format!("--build_event_json_file={}", json.display()))
+            .assert()
+            .code(2);
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+        assert!(
+            stderr.contains(&format!("I/O error reading from {}", missing.display())),
+            "{stderr}"
+        );
+        assert_command_line_error(&json);
+    }
 }
 
 #[cfg(unix)]

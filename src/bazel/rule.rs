@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::bazel::config::ConfigurationRequirements;
 use crate::bazel::label::CanonicalLabel;
 use starlark::values::OwnedFrozenValue;
 use std::collections::BTreeMap;
@@ -43,6 +44,13 @@ pub enum AttributeDependency {
     Dependency,
     NoDependency,
     Output,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AttributeTransition {
+    #[default]
+    None,
+    Exec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +175,7 @@ pub struct AttributeSchema {
     pub selector_conditions_are_dependencies: bool,
     pub allow_files: Option<bool>,
     pub allow_empty: Option<bool>,
+    pub transition: AttributeTransition,
 }
 
 impl AttributeSchema {
@@ -191,6 +200,7 @@ impl AttributeSchema {
             selector_conditions_are_dependencies: configurable,
             allow_files: None,
             allow_empty: None,
+            transition: AttributeTransition::None,
         }
     }
 }
@@ -248,6 +258,15 @@ impl LoadedRuleClass {
         match self {
             Self::Native(rule_class) => rule_class.display_name(),
             Self::Starlark(rule_class) => crate::starlark::rule::frozen_rule_class_name(rule_class),
+        }
+    }
+
+    /// The name of a built-in rule class. Starlark rule classes return `None` even when exported
+    /// under a built-in name, so built-in semantics are never applied to user-defined rules.
+    pub fn native_name(&self) -> Option<&str> {
+        match self {
+            Self::Native(rule_class) => Some(rule_class.display_name()),
+            Self::Starlark(_) => None,
         }
     }
 
@@ -354,6 +373,174 @@ impl Rule {
             }
         }
         labels
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConditionMatch {
+    pub requirements: ConfigurationRequirements,
+}
+
+impl AttributeValue {
+    pub fn resolve(
+        &self,
+        schema: &AttributeSchema,
+        mut matches: impl FnMut(&CanonicalLabel<'static>) -> anyhow::Result<Option<ConditionMatch>>,
+    ) -> anyhow::Result<DirectAttributeValue> {
+        let mut resolved = Vec::with_capacity(self.parts.len());
+        for part in &self.parts {
+            let value = match part {
+                AttributeValuePart::Direct(value) => value.clone(),
+                AttributeValuePart::Selector(selector) => {
+                    resolve_selector(schema, selector, &mut matches)?
+                }
+            };
+            resolved.push(value);
+        }
+        let resolved = concatenate_values(schema, resolved)?;
+        if self
+            .parts
+            .iter()
+            .any(|part| matches!(part, AttributeValuePart::Selector(_)))
+            && let DirectAttributeValue::LabelList(labels) = &resolved
+        {
+            let mut unique = std::collections::BTreeSet::new();
+            if labels.iter().any(|label| !unique.insert(label)) {
+                anyhow::bail!(
+                    "attribute `{}` contains a duplicate label after select() resolution",
+                    schema.name
+                );
+            }
+        }
+        Ok(resolved)
+    }
+}
+
+fn resolve_selector(
+    schema: &AttributeSchema,
+    selector: &Selector,
+    matches: &mut impl FnMut(&CanonicalLabel<'static>) -> anyhow::Result<Option<ConditionMatch>>,
+) -> anyhow::Result<DirectAttributeValue> {
+    let mut matching = Vec::new();
+    for (label, branch) in &selector.entries {
+        if let Some(condition) = matches(label)? {
+            matching.push((label, branch, condition));
+        }
+    }
+
+    if matching.is_empty() {
+        return match &selector.default {
+            Some(branch) => branch_value(schema, branch),
+            None if !selector.no_match_error.is_empty() => anyhow::bail!(
+                "configurable attribute `{}` doesn't match this configuration: {}",
+                schema.name,
+                selector.no_match_error
+            ),
+            None => anyhow::bail!(
+                "configurable attribute `{}` doesn't match this configuration (would a default condition help?)",
+                schema.name
+            ),
+        };
+    }
+
+    let maximal = matching.iter().filter(|(_, _, candidate)| {
+        !matching.iter().any(|(_, _, other)| {
+            other
+                .requirements
+                .is_strict_specialization_of(&candidate.requirements)
+        })
+    });
+    let maximal = maximal
+        .map(|(label, branch, _)| Ok((*label, branch_value(schema, branch)?)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let Some((_, value)) = maximal.first() else {
+        let labels = matching
+            .iter()
+            .map(|(label, _, _)| label.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "configurable attribute `{}` is ambiguous; matching conditions: {labels}",
+            schema.name
+        );
+    };
+    if maximal.iter().all(|(_, candidate)| candidate == value) {
+        return Ok(value.clone());
+    }
+    let labels = maximal
+        .iter()
+        .map(|(label, _)| label.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "configurable attribute `{}` is ambiguous; matching conditions: {labels}",
+        schema.name
+    )
+}
+
+fn branch_value(
+    schema: &AttributeSchema,
+    branch: &Option<DirectAttributeValue>,
+) -> anyhow::Result<DirectAttributeValue> {
+    branch
+        .as_ref()
+        .or(schema.default.as_ref())
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("attribute `{}` has no default value", schema.name))
+}
+
+fn concatenate_values(
+    schema: &AttributeSchema,
+    mut values: Vec<DirectAttributeValue>,
+) -> anyhow::Result<DirectAttributeValue> {
+    if values.len() == 1 {
+        return Ok(values.pop().unwrap());
+    }
+    match schema.attribute_type {
+        AttributeType::IntList => {
+            let mut combined = Vec::new();
+            for value in values {
+                let DirectAttributeValue::IntList(mut value) = value else {
+                    anyhow::bail!("attribute `{}` has incompatible select values", schema.name);
+                };
+                combined.append(&mut value);
+            }
+            Ok(DirectAttributeValue::IntList(combined))
+        }
+        AttributeType::String => {
+            let mut combined = String::new();
+            for value in values {
+                let DirectAttributeValue::String(value) = value else {
+                    anyhow::bail!("attribute `{}` has incompatible select values", schema.name);
+                };
+                combined.push_str(&value);
+            }
+            Ok(DirectAttributeValue::String(combined))
+        }
+        AttributeType::StringList => {
+            let mut combined = Vec::new();
+            for value in values {
+                let DirectAttributeValue::StringList(mut value) = value else {
+                    anyhow::bail!("attribute `{}` has incompatible select values", schema.name);
+                };
+                combined.append(&mut value);
+            }
+            Ok(DirectAttributeValue::StringList(combined))
+        }
+        AttributeType::LabelList => {
+            let mut combined = Vec::new();
+            for value in values {
+                let DirectAttributeValue::LabelList(mut value) = value else {
+                    anyhow::bail!("attribute `{}` has incompatible select values", schema.name);
+                };
+                combined.append(&mut value);
+            }
+            Ok(DirectAttributeValue::LabelList(combined))
+        }
+        _ => anyhow::bail!(
+            "attribute `{}` cannot concatenate select values",
+            schema.name
+        ),
     }
 }
 
