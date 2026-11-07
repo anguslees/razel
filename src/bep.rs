@@ -233,10 +233,11 @@ impl Invocation {
         let explicit_options = explicit_options(cli, matches);
         let (command, patterns) = match &cli.command {
             Commands::Version => ("version", Vec::new()),
-            Commands::Build { targets } => ("build", targets.clone()),
-            Commands::Test { targets } => ("test", targets.clone()),
-            Commands::Run { target } => ("run", vec![target.clone()]),
-            Commands::Query { .. } => ("query", Vec::new()),
+            Commands::Build { targets, .. } => ("build", targets.clone()),
+            Commands::Test { targets, .. } => ("test", targets.clone()),
+            Commands::Run { target, .. } => ("run", vec![target.clone()]),
+            Commands::Query(_) => ("query", Vec::new()),
+            Commands::Cquery(_) => ("cquery", Vec::new()),
         };
 
         Ok(Self {
@@ -263,7 +264,12 @@ impl Invocation {
             .unwrap_or_else(|| working_directory.clone());
         let command = args
             .iter()
-            .find(|arg| matches!(arg.as_str(), "version" | "build" | "test" | "run" | "query"))
+            .find(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "version" | "build" | "test" | "run" | "query" | "cquery"
+                )
+            })
             .cloned()
             .unwrap_or_default();
         Ok(Self {
@@ -679,16 +685,89 @@ fn explicit_options(cli: &Cli, matches: &ArgMatches) -> Vec<String> {
             options.push(format!("--{name}={}", path.display()));
         }
     }
-    if let Commands::Query { output, .. } = &cli.command
-        && matches
-            .subcommand_matches("query")
-            .and_then(|matches| matches.value_source("output"))
-            == Some(ValueSource::CommandLine)
+    let (subcommand, query, build) = match &cli.command {
+        Commands::Version => ("version", None, None),
+        Commands::Build { options, .. } => ("build", None, Some(options)),
+        Commands::Test { options, .. } => ("test", None, Some(options)),
+        Commands::Run { options, .. } => ("run", None, Some(options)),
+        Commands::Query(query) => ("query", Some(&query.query), None),
+        Commands::Cquery(cquery) => ("cquery", Some(&cquery.query), Some(&cquery.build)),
+    };
+    let Some(matches) = matches.subcommand_matches(subcommand) else {
+        return options;
+    };
+    let explicit = |id| matches.value_source(id) == Some(ValueSource::CommandLine);
+    if let Some(query) = query {
+        if explicit("output") {
+            options.push(format!(
+                "--output={}",
+                query.output.to_possible_value().unwrap().get_name()
+            ));
+        }
+        if explicit("query_file")
+            && let Some(path) = &query.query_file
+        {
+            options.push(format!("--query_file={}", path.display()));
+        }
+    }
+    if let Commands::Query(query) = &cli.command
+        && explicit("order_output")
     {
         options.push(format!(
-            "--output={}",
-            output.to_possible_value().unwrap().get_name()
+            "--order_output={}",
+            query.order_output.to_possible_value().unwrap().get_name()
         ));
+    }
+    if let Some(build) = build {
+        // Like Bazel's canonical form: full names, `=` values, and booleans as --name/--noname.
+        for (id, name, value) in [
+            ("cpu", "cpu", &build.cpu),
+            ("host_cpu", "host_cpu", &build.host_cpu),
+            (
+                "compilation_mode",
+                "compilation_mode",
+                &build.compilation_mode,
+            ),
+            (
+                "host_compilation_mode",
+                "host_compilation_mode",
+                &build.host_compilation_mode,
+            ),
+        ] {
+            if explicit(id) {
+                options.push(format!("--{name}={value}"));
+            }
+        }
+        for (id, enabled) in [
+            ("force_pic", build.force_pic),
+            ("no_force_pic", build.no_force_pic.map(|disabled| !disabled)),
+        ] {
+            if explicit(id)
+                && let Some(enabled) = enabled
+            {
+                options.push(
+                    if enabled {
+                        "--force_pic"
+                    } else {
+                        "--noforce_pic"
+                    }
+                    .to_owned(),
+                );
+            }
+        }
+        if explicit("defines") {
+            options.extend(
+                build
+                    .defines
+                    .iter()
+                    .map(|(name, value)| format!("--define={name}={value}")),
+            );
+        }
+        if explicit("platform")
+            && let Some(platform) = &build.platform
+        {
+            options.push(format!("--platforms={platform}"));
+        }
     }
     options
 }
@@ -701,6 +780,14 @@ fn explicit_options_for_parse_error(args: &[String]) -> Vec<String> {
         "--build_event_json_file",
         "--build_event_text_file",
         "--output",
+        "--order_output",
+        "--query_file",
+        "--cpu",
+        "--host_cpu",
+        "--compilation_mode",
+        "--host_compilation_mode",
+        "--define",
+        "--platforms",
     ];
 
     let mut options = Vec::new();
@@ -709,11 +796,16 @@ fn explicit_options_for_parse_error(args: &[String]) -> Vec<String> {
         if !arg.starts_with('-') {
             continue;
         }
-        if !arg.contains('=') && FLAGS_WITH_VALUES.contains(&arg.as_str()) {
+        let name = if arg == "-c" {
+            "--compilation_mode"
+        } else {
+            arg.as_str()
+        };
+        if !arg.contains('=') && FLAGS_WITH_VALUES.contains(&name) {
             if let Some(value) = args.next() {
-                options.push(format!("{arg}={value}"));
+                options.push(format!("{name}={value}"));
             } else {
-                options.push(arg.clone());
+                options.push(name.to_owned());
             }
         } else {
             options.push(arg.clone());
@@ -801,5 +893,97 @@ mod tests {
         assert_eq!(events[3]["aborted"]["reason"], "USER_INTERRUPTED");
         assert_eq!(events[3]["aborted"]["description"], "command interrupted");
         assert_eq!(events[4]["finished"]["exitCode"]["code"], 8);
+    }
+
+    fn parsed_explicit_options(args: &[&str]) -> Vec<String> {
+        use clap::{CommandFactory, FromArgMatches};
+
+        let matches = Cli::command()
+            .try_get_matches_from(std::iter::once("razel").chain(args.iter().copied()))
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        explicit_options(&cli, &matches)
+    }
+
+    #[test]
+    fn explicit_options_report_shared_build_and_query_flags() {
+        let build_options = [
+            "-c",
+            "dbg",
+            "--cpu=arm",
+            "--host_cpu=k8",
+            "--host_compilation_mode=fastbuild",
+            "--define",
+            "a=1",
+            "--define=b=2",
+            "--force_pic=0",
+            "--platforms=//:red",
+        ];
+        let expected = [
+            "--cpu=arm",
+            "--host_cpu=k8",
+            "--compilation_mode=dbg",
+            "--host_compilation_mode=fastbuild",
+            "--noforce_pic",
+            "--define=a=1",
+            "--define=b=2",
+            "--platforms=//:red",
+        ];
+        for command in ["build", "test", "run", "cquery"] {
+            let args = [&[command][..], &build_options, &["//:target"]].concat();
+            assert_eq!(parsed_explicit_options(&args), expected, "{command}");
+        }
+
+        // Only options given on the command line are explicit, and --noforce_pic=false
+        // canonicalizes to the enabled spelling.
+        assert_eq!(
+            parsed_explicit_options(&["build", "--noforce_pic=false", "//:target"]),
+            ["--force_pic"]
+        );
+        assert!(parsed_explicit_options(&["cquery", "//:target"]).is_empty());
+
+        assert_eq!(
+            parsed_explicit_options(&[
+                "cquery",
+                "--output=label_kind",
+                "--query_file=selection.cquery",
+                "--cpu=arm",
+            ]),
+            [
+                "--output=label_kind",
+                "--query_file=selection.cquery",
+                "--cpu=arm"
+            ]
+        );
+        assert_eq!(
+            parsed_explicit_options(&["query", "--order_output", "no", "//:target"]),
+            ["--order_output=no"]
+        );
+        assert!(parsed_explicit_options(&["query", "//:target"]).is_empty());
+    }
+
+    #[test]
+    fn parse_error_fallback_keeps_values_of_shared_build_flags() {
+        let args = [
+            "cquery",
+            "-c",
+            "dbg",
+            "--define",
+            "a=1",
+            "--query_file",
+            "q.txt",
+            "--unknown",
+            "//:target",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            explicit_options_for_parse_error(&args),
+            [
+                "--compilation_mode=dbg",
+                "--define=a=1",
+                "--query_file=q.txt",
+                "--unknown"
+            ]
+        );
     }
 }

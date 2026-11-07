@@ -208,12 +208,61 @@ fn query_all_targets_alias_matches_star() {
 }
 
 #[test]
-fn query_union_does_not_introduce_cross_operand_edges() {
+fn query_orders_results_by_label_unless_unordered() {
     inventory_command()
         .args(["query", "//:group + //:custom.out"])
         .assert()
         .success()
+        .stdout("//:custom.out\n//:group\n");
+
+    inventory_command()
+        .args(["query", "--order_output=no", "//:group + //:custom.out"])
+        .assert()
+        .success()
         .stdout("//:group\n//:custom.out\n");
+
+    // Both orders select the same targets.
+    let lines = |args: &[&str]| {
+        let output = inventory_command().args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    for expression in [
+        "//:* - //:all",
+        "//... ^ //:*",
+        "//nested:* + //:all + //:group",
+        "let targets = //...:* in $targets - //:* + $targets ^ //nested:all",
+        "deps(//nested:nested_group) + //:group",
+    ] {
+        let sorted = lines(&["query", expression]);
+        let mut unordered = lines(&["query", "--order_output=no", expression]);
+        unordered.sort();
+        // These labels sort like their strings, as all their packages are `` or `nested`.
+        assert_eq!(sorted, unordered, "{expression}");
+        assert!(!sorted.is_empty(), "{expression}");
+    }
+}
+
+#[test]
+fn query_dependency_orders_are_not_supported_yet() {
+    for order in ["deps", "full"] {
+        inventory_command()
+            .args(["query", &format!("--order_output={order}"), "//:all"])
+            .assert()
+            .code(2)
+            .stdout("")
+            .stderr(predicate::str::contains(format!(
+                "--order_output={order} is not supported yet"
+            )));
+    }
 }
 
 #[test]
@@ -290,6 +339,16 @@ fn recursive_query_does_not_require_prefix_package() {
 fn recursive_query_streams_results_before_a_late_package_error() {
     fixture_command("recursive_streaming")
         .args(["query", "//..."])
+        .assert()
+        .failure()
+        .stdout("//a:early\n")
+        .stderr(predicate::str::contains("missing.bzl"));
+}
+
+#[test]
+fn deps_query_preserves_results_before_a_late_package_error() {
+    fixture_command("recursive_streaming")
+        .args(["query", "deps(//...)"])
         .assert()
         .failure()
         .stdout("//a:early\n")
