@@ -4,8 +4,8 @@ use crate::bazel::config::{
 };
 use crate::bazel::label::{CanonicalLabel, MAIN_REPO_ROOT, Repo, TargetPatternKind};
 use crate::bazel::rule::{
-    AttributeDependency, AttributeTransition, AttributeValuePart, ConditionMatch,
-    DirectAttributeValue, Rule, RuleAttribute,
+    AttributeDependency, AttributeSchema, AttributeTransition, AttributeValue, AttributeValuePart,
+    ConditionMatch, DirectAttributeValue, Rule,
 };
 use crate::bazel::target::Target;
 use crate::query::QueryOutput;
@@ -13,7 +13,9 @@ use crate::query_syntax::{Expr, SetOp};
 use crate::stream_tee::{StreamTee, StreamTeeExt};
 use crate::workspace::{ExpandedTarget, ExpandedTargetKind, LoadedTarget, Workspace};
 use futures::FutureExt;
+use futures::future::join_all;
 use futures::stream::{self, BoxStream, StreamExt};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -53,7 +55,7 @@ impl Configurations {
         ]);
         for (key, value) in &options.defines {
             values.insert(
-                ConfigurationKey::Define(key.clone()),
+                ConfigurationKey::Define(key.clone().into()),
                 ConfigurationValue::String(value.clone()),
             );
         }
@@ -84,19 +86,12 @@ impl Configurations {
             }
             reject_explicit_attribute(rule, "parents", "platform inheritance")?;
             reject_explicit_attribute(rule, "flags", "platform flags")?;
-            let mut constraints = BTreeSet::new();
-            let mut settings = BTreeSet::new();
-            for constraint in crate::bazel::config::label_list(rule, "constraint_values")? {
-                let (constraint, setting) =
-                    resolve_constraint_value(workspace, &constraint).await?;
-                if !settings.insert(setting.clone()) {
-                    anyhow::bail!(
-                        "target platform `{platform}` contains multiple values for constraint setting `{setting}`"
-                    );
-                }
-                constraints.insert(constraint);
-            }
-            target_constraints = constraints;
+            target_constraints = resolve_constraint_values(
+                workspace,
+                crate::bazel::config::label_list(rule, "constraint_values")?,
+                || format!("target platform `{platform}`"),
+            )
+            .await?;
             values.insert(
                 ConfigurationKey::Native("platforms".into()),
                 ConfigurationValue::List(vec![ConfigurationValue::Label(platform_label)]),
@@ -150,7 +145,11 @@ impl Configurations {
         }
     }
 
-    fn matches(&self, kind: ConfigurationKind, requirements: &ConfigurationRequirements) -> bool {
+    fn matches(
+        &self,
+        kind: ConfigurationKind,
+        requirements: &ConfigurationRequirements<'_>,
+    ) -> bool {
         self.get(kind).is_some_and(|configuration| {
             configuration.matches_options(requirements)
                 && requirements.constraints.iter().all(|constraint| {
@@ -158,6 +157,55 @@ impl Configurations {
                         && self.target_constraints.contains(constraint)
                 })
         })
+    }
+
+    /// Matches `conditions` against configuration `kind`. The matches borrow the conditions.
+    fn match_conditions<'c>(
+        &self,
+        kind: ConfigurationKind,
+        conditions: &'c BTreeMap<CanonicalLabel<'_>, Condition>,
+    ) -> anyhow::Result<BTreeMap<CanonicalLabel<'c>, Option<ConditionMatch<'c>>>> {
+        conditions
+            .iter()
+            .map(|(label, condition)| {
+                let requirements = condition.requirements()?;
+                let matched = self.matches(kind, &requirements);
+                Ok((
+                    label.as_borrowed(),
+                    matched.then_some(ConditionMatch { requirements }),
+                ))
+            })
+            .collect()
+    }
+}
+
+/// The target of a select() key after following aliases: a `config_setting` or
+/// `constraint_value`. Its requirements borrow from it, so it stays loaded while they are used.
+struct Condition {
+    target: LoadedTarget,
+    /// The `values` entry for `platforms`, as the platform's canonical label.
+    platform: Option<String>,
+    /// The constraint values, resolved through aliases.
+    constraints: BTreeSet<CanonicalLabel<'static>>,
+}
+
+impl Condition {
+    fn requirements(&self) -> anyhow::Result<ConfigurationRequirements<'_>> {
+        let mut requirements = match self.target.target.as_rule() {
+            Some(rule) if rule.rule_class().native_name() == Some("config_setting") => {
+                ConfigurationRequirements::from_rule(rule)?
+            }
+            _ => ConfigurationRequirements::default(),
+        };
+        if let Some(platform) = &self.platform {
+            requirements.values.insert("platforms", platform);
+        }
+        requirements.constraints = self
+            .constraints
+            .iter()
+            .map(CanonicalLabel::as_borrowed)
+            .collect();
+        Ok(requirements)
     }
 }
 
@@ -484,22 +532,12 @@ impl<'a> Analysis<'a> {
         &self,
         target: &ConfiguredTarget,
     ) -> anyhow::Result<Vec<ConfiguredTarget>> {
-        let loaded = self
-            .workspace
-            .load_target(&target.target.label)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("target `{}` does not exist", target.target.label))?;
-        let mut dependencies = Vec::new();
-        // Dependencies are loaded and configured once, after collection.
-        let mut depend_on = |label: &CanonicalLabel<'static>, configuration| {
-            dependencies.push(ConfiguredTarget {
-                target: ExpandedTarget {
-                    label: label.clone(),
-                    kind: ExpandedTargetKind::SourceFile,
-                },
-                configuration,
-            });
-        };
+        let loaded = self.required_target(&target.target.label).await?;
+        let configuration = target.configuration;
+        // The dependencies to load and their configurations. Labels borrow from the target where
+        // possible.
+        let mut requests = Vec::new();
+        let mut validated_rule = None;
         match &loaded.target {
             Target::Rule(rule) => {
                 let attributes = rule
@@ -509,45 +547,47 @@ impl<'a> Analysis<'a> {
                     .zip(rule.attributes.iter())
                     .filter_map(|(schema, attribute)| Some((schema, attribute.as_ref()?)));
                 // As in Bazel, every select() key is analyzed before compatibility is known.
-                let mut condition_matches = BTreeMap::new();
+                let mut condition_labels = BTreeSet::new();
                 for (schema, attribute) in attributes.clone() {
                     for part in &attribute.value.parts {
                         let AttributeValuePart::Selector(selector) = part else {
                             continue;
                         };
                         for condition in selector.entries.keys() {
-                            if !condition_matches.contains_key(condition) {
-                                let matched = self
-                                    .match_condition(condition, target.configuration)
-                                    .await?;
-                                condition_matches.insert(condition.clone(), matched);
-                            }
+                            condition_labels.insert(condition.as_borrowed());
                             if schema.selector_conditions_are_dependencies {
-                                depend_on(condition, target.configuration);
+                                requests.push((condition.as_borrowed(), configuration));
                             }
                         }
                     }
                 }
-                let resolve = |schema, attribute: &RuleAttribute| {
-                    attribute.value.resolve(schema, |condition| {
-                        Ok(condition_matches.get(condition).cloned().flatten())
-                    })
-                };
+                let conditions = self
+                    .load_conditions(condition_labels, configuration, &BTreeSet::new())
+                    .await?;
+                let matches = self
+                    .configurations
+                    .match_conditions(configuration, &conditions)?;
 
                 let mut incompatible = false;
-                if target.configuration == ConfigurationKind::Target
+                if configuration == ConfigurationKind::Target
                     && self.configurations.target_platform_explicit
                     && let Some((schema, attribute)) = attributes
                         .clone()
                         .find(|(schema, _)| schema.name == "target_compatible_with")
                 {
                     let mut constraints = Vec::new();
-                    resolve(schema, attribute)?
-                        .visit_labels(|label| constraints.push(label.clone()));
-                    for constraint in &constraints {
-                        let (resolved, _) =
-                            resolve_constraint_value(self.workspace, constraint).await?;
-                        let requirements = ConfigurationRequirements::for_constraint(resolved);
+                    visit_resolved_labels(
+                        resolve_attribute(schema, &attribute.value, &matches)?,
+                        |label| constraints.push(label),
+                    );
+                    let resolved =
+                        join_all(constraints.iter().map(|constraint| {
+                            resolve_constraint_value(self.workspace, constraint)
+                        }))
+                        .await;
+                    for result in resolved {
+                        let (constraint, _) = result?;
+                        let requirements = ConfigurationRequirements::for_constraint(constraint);
                         incompatible |= !self
                             .configurations
                             .matches(ConfigurationKind::Target, &requirements);
@@ -556,69 +596,78 @@ impl<'a> Analysis<'a> {
                         // Bazel skips a directly incompatible target without resolving its other
                         // attributes, so only its select() keys and compatibility constraints
                         // remain dependencies. cquery reports the target instead of failing.
-                        for constraint in &constraints {
-                            depend_on(constraint, target.configuration);
-                        }
+                        requests.extend(
+                            constraints
+                                .into_iter()
+                                .map(|constraint| (constraint, configuration)),
+                        );
                     }
                 }
 
                 if !incompatible {
-                    self.validate_rule(rule, &target.target.label).await?;
+                    validated_rule = Some(rule);
                     for (schema, attribute) in attributes {
-                        let resolved = resolve(schema, attribute)?;
+                        let resolved = resolve_attribute(schema, &attribute.value, &matches)?;
                         if schema.dependency == AttributeDependency::Dependency {
                             let dependency_configuration = match schema.transition {
-                                AttributeTransition::None => target.configuration,
+                                AttributeTransition::Target => configuration,
                                 AttributeTransition::Exec => ConfigurationKind::Exec,
                             };
-                            resolved
-                                .visit_labels(|label| depend_on(label, dependency_configuration));
+                            visit_resolved_labels(resolved, |label| {
+                                requests.push((label, dependency_configuration));
+                            });
                         }
                     }
                 }
             }
-            Target::GeneratedFile(generated) => depend_on(
-                &CanonicalLabel::new(
-                    target.target.label.repo.clone(),
-                    target.target.label.package().to_owned(),
-                    generated.generating_rule.clone(),
-                ),
-                target.configuration,
-            ),
+            Target::GeneratedFile(generated) => requests.push((
+                target
+                    .target
+                    .label
+                    .as_borrowed()
+                    .same_package_label(generated.generating_rule.as_str()),
+                configuration,
+            )),
             Target::SourceFile(_) => {}
         }
 
-        for dependency in &mut dependencies {
-            let loaded = self.required_target(&dependency.target.label).await?;
-            *dependency = ConfiguredTarget::new(loaded, dependency.configuration);
-        }
-        dependencies.sort_by(|left, right| {
-            (&left.target.label, left.configuration)
-                .cmp(&(&right.target.label, right.configuration))
-        });
+        requests.sort_unstable();
+        requests.dedup();
+        // Validate the rule while its dependencies load, and load them concurrently.
+        let validation = async {
+            match validated_rule {
+                Some(rule) => self.validate_rule(rule, &target.target.label).await,
+                None => Ok(()),
+            }
+        };
+        let loading = join_all(
+            requests
+                .iter()
+                .map(|(label, _)| self.required_target(label)),
+        );
+        let (validation, loaded) = futures::join!(validation, loading);
+        validation?;
+        let mut dependencies = requests
+            .iter()
+            .zip(loaded)
+            .map(|((_, configuration), loaded)| Ok(ConfiguredTarget::new(loaded?, *configuration)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        // Source files and constraints ignore the requested configuration, so different requests
+        // can give the same configured target. Requests are sorted by label, so these are adjacent.
         dependencies.dedup_by(|left, right| {
             left.target.label == right.target.label && left.configuration == right.configuration
         });
         Ok(dependencies)
     }
 
-    async fn validate_rule(
-        &self,
-        rule: &Rule,
-        label: &CanonicalLabel<'static>,
-    ) -> anyhow::Result<()> {
+    async fn validate_rule(&self, rule: &Rule, label: &CanonicalLabel<'_>) -> anyhow::Result<()> {
         match rule.rule_class().native_name() {
             Some("config_setting") => {
                 let requirements = ConfigurationRequirements::from_rule(rule)?;
-                let mut settings = BTreeSet::new();
-                for constraint in &requirements.constraints {
-                    let (_, setting) = resolve_constraint_value(self.workspace, constraint).await?;
-                    if !settings.insert(setting.clone()) {
-                        anyhow::bail!(
-                            "config_setting `{label}` contains multiple values for constraint setting `{setting}`"
-                        );
-                    }
-                }
+                resolve_constraint_values(self.workspace, &requirements.constraints, || {
+                    format!("config_setting `{label}`")
+                })
+                .await?;
             }
             Some("constraint_setting") => {
                 reject_explicit_attribute(
@@ -638,16 +687,12 @@ impl<'a> Analysis<'a> {
             Some("platform") => {
                 reject_explicit_attribute(rule, "parents", "platform inheritance")?;
                 reject_explicit_attribute(rule, "flags", "platform flags")?;
-                let mut settings = BTreeSet::new();
-                for constraint in crate::bazel::config::label_list(rule, "constraint_values")? {
-                    let (_, setting) =
-                        resolve_constraint_value(self.workspace, &constraint).await?;
-                    if !settings.insert(setting.clone()) {
-                        anyhow::bail!(
-                            "platform `{label}` contains multiple values for constraint setting `{setting}`"
-                        );
-                    }
-                }
+                resolve_constraint_values(
+                    self.workspace,
+                    crate::bazel::config::label_list(rule, "constraint_values")?,
+                    || format!("platform `{label}`"),
+                )
+                .await?;
             }
             _ => {}
         }
@@ -661,33 +706,48 @@ impl<'a> Analysis<'a> {
             .ok_or_else(|| anyhow::anyhow!("target `{label}` does not exist"))
     }
 
-    async fn match_condition(
+    /// Loads the targets of select() keys `labels` concurrently, following aliases. `aliases`
+    /// are those already followed, to detect cycles.
+    async fn load_conditions<'l>(
         &self,
-        label: &CanonicalLabel<'static>,
+        labels: BTreeSet<CanonicalLabel<'l>>,
         configuration: ConfigurationKind,
-    ) -> anyhow::Result<Option<ConditionMatch>> {
-        self.match_condition_inner(label, configuration, &mut BTreeSet::new())
-            .await
+        aliases: &BTreeSet<CanonicalLabel<'static>>,
+    ) -> anyhow::Result<BTreeMap<CanonicalLabel<'l>, Condition>> {
+        let loaded = join_all(labels.iter().map(|label| {
+            let mut aliases = aliases.clone();
+            async move {
+                self.load_condition(label, configuration, &mut aliases)
+                    .await
+            }
+        }))
+        .await;
+        labels
+            .into_iter()
+            .zip(loaded)
+            .map(|(label, condition)| Ok((label, condition?)))
+            .collect()
     }
 
+    /// Loads the target of select() key `label`, following aliases.
     #[async_recursion::async_recursion]
-    async fn match_condition_inner(
+    async fn load_condition<'l>(
         &self,
-        label: &CanonicalLabel<'static>,
+        label: &CanonicalLabel<'l>,
         configuration: ConfigurationKind,
         aliases: &mut BTreeSet<CanonicalLabel<'static>>,
-    ) -> anyhow::Result<Option<ConditionMatch>> {
-        let loaded = self
+    ) -> anyhow::Result<Condition> {
+        let target = self
             .workspace
             .load_target(label)
             .await?
             .ok_or_else(|| anyhow::anyhow!("select condition `{label}` does not exist"))?;
-        let Some(rule) = loaded.target.as_rule() else {
+        let Some(rule) = target.target.as_rule() else {
             anyhow::bail!("select condition `{label}` is not a config_setting or constraint_value");
         };
-        let requirements = match rule.rule_class().native_name() {
+        let (platform, constraints) = match rule.rule_class().native_name() {
             Some("alias") => {
-                if !aliases.insert(label.clone()) {
+                if !aliases.insert(label.clone().into_owned()) {
                     anyhow::bail!("alias cycle detected at select condition `{label}`");
                 }
                 let schema = rule
@@ -701,76 +761,112 @@ impl<'a> Analysis<'a> {
                 let attribute = rule.attribute("actual").ok_or_else(|| {
                     anyhow::anyhow!("alias select condition `{label}` has no actual target")
                 })?;
-                let mut conditions = BTreeSet::new();
+                let mut labels = BTreeSet::new();
                 for part in &attribute.parts {
                     if let AttributeValuePart::Selector(selector) = part {
-                        conditions.extend(selector.entries.keys().cloned());
+                        labels.extend(selector.entries.keys().map(CanonicalLabel::as_borrowed));
                     }
                 }
-                let mut condition_matches = BTreeMap::new();
-                for condition in conditions {
-                    let mut condition_aliases = aliases.clone();
-                    condition_matches.insert(
-                        condition.clone(),
-                        self.match_condition_inner(
-                            &condition,
-                            configuration,
-                            &mut condition_aliases,
-                        )
-                        .await?,
-                    );
-                }
-                let actual = attribute.resolve(schema, |condition| {
-                    Ok(condition_matches.get(condition).cloned().flatten())
-                })?;
-                let DirectAttributeValue::Label(actual) = actual else {
+                let conditions = self.load_conditions(labels, configuration, aliases).await?;
+                let matches = self
+                    .configurations
+                    .match_conditions(configuration, &conditions)?;
+                let actual = resolve_attribute(schema, attribute, &matches)?;
+                let DirectAttributeValue::Label(actual) = &*actual else {
                     anyhow::bail!("alias select condition `{label}` has an invalid actual target");
                 };
-                return self
-                    .match_condition_inner(&actual, configuration, aliases)
-                    .await;
+                return self.load_condition(actual, configuration, aliases).await;
             }
             Some("config_setting") => {
-                let mut requirements = ConfigurationRequirements::from_rule(rule)?;
-                if let Some(platform) = requirements.values.get_mut("platforms") {
-                    let repository = self.workspace.main_repo().await?;
-                    let parsed = crate::bazel::label::parse_label(platform, &MAIN_REPO_ROOT)
-                        .map_err(|error| anyhow::anyhow!("invalid platforms condition: {error}"))?;
-                    *platform = repository
-                        .resolve_label(parsed)
-                        .ok_or_else(|| {
+                let requirements = ConfigurationRequirements::from_rule(rule)?;
+                let platform = match requirements.values.get("platforms") {
+                    Some(platform) => {
+                        let repository = self.workspace.main_repo().await?;
+                        let parsed = crate::bazel::label::parse_label(platform, &MAIN_REPO_ROOT)
+                            .map_err(|error| {
+                                anyhow::anyhow!("invalid platforms condition: {error}")
+                            })?;
+                        let canonical = repository.resolve_label(parsed).ok_or_else(|| {
                             anyhow::anyhow!("unknown repository in platforms condition")
-                        })?
-                        .to_string();
-                }
-                let mut constraints = BTreeSet::new();
-                let mut settings = BTreeSet::new();
-                for constraint in requirements.constraints {
-                    let (constraint, setting) =
-                        resolve_constraint_value(self.workspace, &constraint).await?;
-                    if !settings.insert(setting.clone()) {
-                        anyhow::bail!(
-                            "config_setting `{label}` contains multiple values for constraint setting `{setting}`"
-                        );
+                        })?;
+                        Some(canonical.to_string())
                     }
-                    constraints.insert(constraint);
-                }
-                requirements.constraints = constraints;
-                requirements
+                    None => None,
+                };
+                let constraints =
+                    resolve_constraint_values(self.workspace, &requirements.constraints, || {
+                        format!("config_setting `{label}`")
+                    })
+                    .await?;
+                (platform, constraints)
             }
             Some("constraint_value") => {
                 let (constraint, _) = resolve_constraint_value(self.workspace, label).await?;
-                ConfigurationRequirements::for_constraint(constraint)
+                (None, BTreeSet::from([constraint]))
             }
             _ => anyhow::bail!(
                 "select condition `{label}` is not a config_setting or constraint_value"
             ),
         };
-        Ok(self
-            .configurations
-            .matches(configuration, &requirements)
-            .then_some(ConditionMatch { requirements }))
+        Ok(Condition {
+            target,
+            platform,
+            constraints,
+        })
     }
+}
+
+/// Resolves the select()s of `value` with the conditions in `matches`.
+fn resolve_attribute<'v>(
+    schema: &'v AttributeSchema,
+    value: &'v AttributeValue,
+    matches: &BTreeMap<CanonicalLabel<'_>, Option<ConditionMatch<'_>>>,
+) -> anyhow::Result<Cow<'v, DirectAttributeValue>> {
+    value.resolve(schema, |condition| {
+        Ok(matches.get(&condition).and_then(Option::as_ref))
+    })
+}
+
+/// Calls `visitor` with each label of a resolved value, borrowing labels from borrowed values.
+fn visit_resolved_labels<'v>(
+    value: Cow<'v, DirectAttributeValue>,
+    mut visitor: impl FnMut(CanonicalLabel<'v>),
+) {
+    match value {
+        Cow::Borrowed(value) => value.visit_labels(|label| visitor(label.as_borrowed())),
+        // A concatenated label list is the only owned value with labels; move them out.
+        Cow::Owned(DirectAttributeValue::LabelList(labels)) => labels.into_iter().for_each(visitor),
+        Cow::Owned(value) => value.visit_labels(|label| visitor(label.clone())),
+    }
+}
+
+/// Resolves `constraints` concurrently through aliases, failing if two are values of the same
+/// constraint setting. `owner` describes the target that lists them, for that error.
+async fn resolve_constraint_values<'l, 'k: 'l>(
+    workspace: &Arc<Workspace>,
+    constraints: impl IntoIterator<Item = &'l CanonicalLabel<'k>>,
+    owner: impl FnOnce() -> String,
+) -> anyhow::Result<BTreeSet<CanonicalLabel<'static>>> {
+    let resolved = join_all(
+        constraints
+            .into_iter()
+            .map(|constraint| resolve_constraint_value(workspace, constraint)),
+    )
+    .await;
+    let mut values = BTreeSet::new();
+    let mut settings = BTreeSet::new();
+    for result in resolved {
+        let (value, setting) = result?;
+        if settings.contains(&setting) {
+            anyhow::bail!(
+                "{} contains multiple values for constraint setting `{setting}`",
+                owner()
+            );
+        }
+        settings.insert(setting);
+        values.insert(value);
+    }
+    Ok(values)
 }
 
 fn collect_target_patterns<'a>(expr: &Expr<'a>, patterns: &mut Vec<&'a str>) {
@@ -802,9 +898,9 @@ fn reject_explicit_attribute(rule: &Rule, attribute: &str, feature: &str) -> any
 
 async fn resolve_direct_alias(
     workspace: &Arc<Workspace>,
-    label: &CanonicalLabel<'static>,
+    label: &CanonicalLabel<'_>,
 ) -> anyhow::Result<CanonicalLabel<'static>> {
-    let mut label = label.clone();
+    let mut label = label.clone().into_owned();
     let mut seen = BTreeSet::new();
     loop {
         if !seen.insert(label.clone()) {
@@ -837,7 +933,7 @@ async fn resolve_direct_alias(
 
 async fn resolve_constraint_value(
     workspace: &Arc<Workspace>,
-    label: &CanonicalLabel<'static>,
+    label: &CanonicalLabel<'_>,
 ) -> anyhow::Result<(CanonicalLabel<'static>, CanonicalLabel<'static>)> {
     let label = resolve_direct_alias(workspace, label).await?;
     let loaded = workspace

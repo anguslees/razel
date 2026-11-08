@@ -652,7 +652,7 @@ fn make_attr<'v>(
         ),
         allow_files,
         allow_empty,
-        transition: crate::bazel::rule::AttributeTransition::None,
+        transition: crate::bazel::rule::AttributeTransition::Target,
     };
     if schema.allow_empty == Some(false)
         && schema.default.as_ref().is_some_and(direct_value_is_empty)

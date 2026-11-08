@@ -300,15 +300,17 @@ async fn unconfigured_dependencies(
     target: &ExpandedTarget,
 ) -> anyhow::Result<Vec<ExpandedTarget>> {
     let labels = unconfigured_dependency_labels(workspace, target).await?;
-    let mut dependencies = Vec::with_capacity(labels.len());
-    for label in labels {
-        let dependency = workspace
-            .load_target(&label)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("target `{label}` does not exist"))?;
-        dependencies.push(dependency.expanded);
-    }
-    Ok(dependencies)
+    // Load the dependencies concurrently, reporting the first failure in label order.
+    futures::future::join_all(labels.iter().map(|label| workspace.load_target(label)))
+        .await
+        .into_iter()
+        .zip(&labels)
+        .map(|(dependency, label)| {
+            let dependency =
+                dependency?.ok_or_else(|| anyhow::anyhow!("target `{label}` does not exist"))?;
+            Ok(dependency.expanded)
+        })
+        .collect()
 }
 
 async fn unconfigured_dependency_labels(
@@ -322,11 +324,11 @@ async fn unconfigured_dependency_labels(
     let mut labels = Vec::new();
     match &loaded.target {
         Target::Rule(rule) => rule.visit_dependency_labels(|label| labels.push(label.clone())),
-        Target::GeneratedFile(generated) => labels.push(crate::bazel::label::CanonicalLabel::new(
-            target.label.repo.clone(),
-            target.label.package().to_owned(),
-            generated.generating_rule.clone(),
-        )),
+        Target::GeneratedFile(generated) => labels.push(
+            target
+                .label
+                .same_package_label(generated.generating_rule.clone()),
+        ),
         Target::SourceFile(_) => {}
     }
     labels.sort();

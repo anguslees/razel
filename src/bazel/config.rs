@@ -1,5 +1,6 @@
 use crate::bazel::label::CanonicalLabel;
 use crate::bazel::rule::{DirectAttributeValue, Rule};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, OnceLock};
@@ -11,12 +12,13 @@ pub enum ConfigurationKind {
     Null,
 }
 
-/// Namespaces distinguish native options, --define entries, and Starlark settings.
+/// Namespaces distinguish native options, --define entries, and Starlark settings. A key can
+/// borrow its name, so looking up an option doesn't allocate.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ConfigurationKey {
-    Native(String),
-    Define(String),
-    BuildSetting(CanonicalLabel<'static>),
+pub enum ConfigurationKey<'a> {
+    Native(Cow<'a, str>),
+    Define(Cow<'a, str>),
+    BuildSetting(CanonicalLabel<'a>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -41,12 +43,14 @@ impl ConfigurationValue {
 #[derive(Debug)]
 pub struct BuildConfiguration {
     parent: Option<Arc<BuildConfiguration>>,
-    options: BTreeMap<ConfigurationKey, Option<ConfigurationValue>>,
+    options: BTreeMap<ConfigurationKey<'static>, Option<ConfigurationValue>>,
     checksum: OnceLock<String>,
 }
 
 impl BuildConfiguration {
-    pub fn new(options: impl IntoIterator<Item = (ConfigurationKey, ConfigurationValue)>) -> Self {
+    pub fn new(
+        options: impl IntoIterator<Item = (ConfigurationKey<'static>, ConfigurationValue)>,
+    ) -> Self {
         Self {
             parent: None,
             options: options
@@ -59,7 +63,7 @@ impl BuildConfiguration {
 
     pub fn transition(
         self: &Arc<Self>,
-        overrides: impl IntoIterator<Item = (ConfigurationKey, Option<ConfigurationValue>)>,
+        overrides: impl IntoIterator<Item = (ConfigurationKey<'static>, Option<ConfigurationValue>)>,
     ) -> Self {
         Self {
             parent: Some(self.clone()),
@@ -68,7 +72,9 @@ impl BuildConfiguration {
         }
     }
 
-    pub fn get(&self, key: &ConfigurationKey) -> Option<&ConfigurationValue> {
+    /// The effective value of option `key`. The key may borrow its name, so a lookup doesn't
+    /// allocate; the value is then borrowed for no longer than the key.
+    pub fn get<'s>(&'s self, key: &ConfigurationKey<'s>) -> Option<&'s ConfigurationValue> {
         let mut current = Some(self);
         while let Some(configuration) = current {
             if let Some(value) = configuration.options.get(key) {
@@ -79,22 +85,29 @@ impl BuildConfiguration {
         None
     }
 
-    pub fn matches_options(&self, requirements: &ConfigurationRequirements) -> bool {
+    pub fn matches_options(&self, requirements: &ConfigurationRequirements<'_>) -> bool {
+        // The keys borrow the requirements' names, so checking doesn't allocate.
         requirements.values.iter().all(|(name, expected)| {
-            self.get(&ConfigurationKey::Native(name.clone()))
+            self.get(&ConfigurationKey::Native(Cow::Borrowed(*name)))
                 .is_some_and(|actual| actual.matches(expected))
         }) && requirements.define_values.iter().all(|(name, expected)| {
-            self.get(&ConfigurationKey::Define(name.clone()))
+            self.get(&ConfigurationKey::Define(Cow::Borrowed(*name)))
                 .is_some_and(|actual| actual.matches(expected))
         }) && requirements.flag_values.iter().all(|(label, expected)| {
-            self.get(&ConfigurationKey::BuildSetting(label.clone()))
+            self.get(&ConfigurationKey::BuildSetting(label.as_borrowed()))
                 .is_some_and(|actual| actual.matches(expected))
         })
     }
 
+    /// A short hash of the effective options. Configurations with the same effective options have
+    /// the same checksum, whichever transitions produced them.
     pub fn checksum(&self) -> &str {
         self.checksum.get_or_init(|| {
-            let mut options = BTreeMap::new();
+            // Walk from this configuration up through its parents, keeping the first entry found
+            // for each option, so overrides win. A `None` entry is an option that a transition
+            // removed: it hides any parent value, and is skipped when hashing.
+            let mut options =
+                BTreeMap::<&ConfigurationKey<'static>, Option<&ConfigurationValue>>::new();
             let mut current = Some(self);
             while let Some(configuration) = current {
                 for (key, value) in &configuration.options {
@@ -102,56 +115,74 @@ impl BuildConfiguration {
                 }
                 current = configuration.parent.as_deref();
             }
-            // Identity is determined by effective values, not the transition path.
-            let options = options
-                .into_iter()
-                .filter_map(|(key, value)| value.map(|value| (key, value)))
-                .collect::<BTreeMap<_, _>>();
             let mut hasher = DefaultHasher::new();
-            options.hash(&mut hasher);
+            for (key, value) in &options {
+                if let Some(value) = value {
+                    key.hash(&mut hasher);
+                    value.hash(&mut hasher);
+                }
+            }
             format!("{:07x}", hasher.finish() & 0x0fff_ffff)
         })
     }
 }
 
+/// Parses Bazel's boolean spellings, ignoring ASCII case.
 pub fn parse_bool(value: &str) -> Result<bool, String> {
-    match value.to_ascii_lowercase().as_str() {
-        "1" | "true" | "t" | "yes" | "y" => Ok(true),
-        "0" | "false" | "f" | "no" | "n" => Ok(false),
-        _ => Err(format!("invalid boolean value `{value}`")),
+    let spelled = |spellings: [&str; 5]| {
+        spellings
+            .iter()
+            .any(|spelling| value.eq_ignore_ascii_case(spelling))
+    };
+    if spelled(["1", "true", "t", "yes", "y"]) {
+        Ok(true)
+    } else if spelled(["0", "false", "f", "no", "n"]) {
+        Ok(false)
+    } else {
+        Err(format!("invalid boolean value `{value}`"))
     }
 }
 
+/// What a select() condition requires of a configuration. Requirements borrow from the
+/// condition's rule, so checking a condition copies no strings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ConfigurationRequirements {
-    pub values: BTreeMap<String, String>,
-    pub define_values: BTreeMap<String, String>,
-    pub flag_values: BTreeMap<CanonicalLabel<'static>, String>,
-    pub constraints: BTreeSet<CanonicalLabel<'static>>,
+pub struct ConfigurationRequirements<'a> {
+    pub values: BTreeMap<&'a str, &'a str>,
+    pub define_values: BTreeMap<&'a str, &'a str>,
+    pub flag_values: BTreeMap<CanonicalLabel<'a>, &'a str>,
+    pub constraints: BTreeSet<CanonicalLabel<'a>>,
 }
 
-impl ConfigurationRequirements {
-    pub fn from_rule(rule: &Rule) -> anyhow::Result<Self> {
+impl<'a> ConfigurationRequirements<'a> {
+    pub fn from_rule(rule: &'a Rule) -> anyhow::Result<Self> {
         if rule.rule_class().native_name() != Some("config_setting") {
             anyhow::bail!("target is not a config_setting");
         }
         let mut values = BTreeMap::new();
-        let mut define_values = string_dict(rule, "define_values")?;
-        for (name, value) in string_dict(rule, "values")? {
+        let mut define_values = string_dict(rule, "define_values")?
+            .into_iter()
+            .flatten()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        for (name, value) in string_dict(rule, "values")?.into_iter().flatten() {
             if name == "define" {
                 let (key, value) = value.split_once('=').ok_or_else(|| {
                     anyhow::anyhow!("config_setting define value must have the form NAME=VALUE")
                 })?;
-                if let Some(existing) = define_values.insert(key.to_owned(), value.to_owned())
+                if let Some(existing) = define_values.insert(key, value)
                     && existing != value
                 {
                     anyhow::bail!("config_setting has conflicting values for define `{key}`");
                 }
             } else {
-                values.insert(name.clone(), normalize_option_value(&name, &value)?);
+                values.insert(name.as_str(), normalize_option_value(name, value)?);
             }
         }
-        let flag_values = label_keyed_string_dict(rule, "flag_values")?;
+        let flag_values = label_keyed_string_dict(rule, "flag_values")?
+            .into_iter()
+            .flatten()
+            .map(|(label, value)| (label.as_borrowed(), value.as_str()))
+            .collect::<BTreeMap<_, _>>();
         if !flag_values.is_empty() {
             anyhow::bail!("config_setting flag_values are not supported by cquery yet");
         }
@@ -159,7 +190,10 @@ impl ConfigurationRequirements {
             values,
             define_values,
             flag_values,
-            constraints: label_list(rule, "constraint_values")?.into_iter().collect(),
+            constraints: label_list(rule, "constraint_values")?
+                .iter()
+                .map(CanonicalLabel::as_borrowed)
+                .collect(),
         };
         if requirements.values.is_empty()
             && requirements.define_values.is_empty()
@@ -171,7 +205,7 @@ impl ConfigurationRequirements {
         Ok(requirements)
     }
 
-    pub fn for_constraint(label: CanonicalLabel<'static>) -> Self {
+    pub fn for_constraint(label: CanonicalLabel<'a>) -> Self {
         Self {
             constraints: BTreeSet::from([label]),
             ..Self::default()
@@ -187,14 +221,17 @@ impl ConfigurationRequirements {
     }
 }
 
-fn normalize_option_value(name: &str, value: &str) -> anyhow::Result<String> {
+/// Normalizes an option value, so equivalent spellings compare equal.
+fn normalize_option_value<'a>(name: &str, value: &'a str) -> anyhow::Result<&'a str> {
     match name {
-        "cpu" | "platforms" => Ok(value.to_owned()),
-        "compilation_mode" if matches!(value, "fastbuild" | "dbg" | "opt") => Ok(value.to_owned()),
+        "cpu" | "platforms" => Ok(value),
+        "compilation_mode" if matches!(value, "fastbuild" | "dbg" | "opt") => Ok(value),
         "compilation_mode" => anyhow::bail!("invalid compilation_mode value `{value}`"),
-        "force_pic" => parse_bool(value)
-            .map(|value| value.to_string())
-            .map_err(|_| anyhow::anyhow!("invalid force_pic value `{value}`")),
+        "force_pic" => match parse_bool(value) {
+            Ok(true) => Ok("true"),
+            Ok(false) => Ok("false"),
+            Err(_) => anyhow::bail!("invalid force_pic value `{value}`"),
+        },
         _ => anyhow::bail!("config_setting option `{name}` is not supported by cquery yet"),
     }
 }
@@ -218,30 +255,33 @@ fn direct_attribute<'a>(
         .transpose()
 }
 
-fn string_dict(rule: &Rule, name: &str) -> anyhow::Result<BTreeMap<String, String>> {
-    match direct_attribute(rule, name)? {
-        Some(DirectAttributeValue::StringDict(values)) => Ok(values.clone()),
-        Some(_) => anyhow::bail!("config_setting attribute `{name}` has the wrong type"),
-        None => Ok(BTreeMap::new()),
-    }
-}
-
-fn label_keyed_string_dict(
-    rule: &Rule,
+fn string_dict<'a>(
+    rule: &'a Rule,
     name: &str,
-) -> anyhow::Result<BTreeMap<CanonicalLabel<'static>, String>> {
+) -> anyhow::Result<Option<&'a BTreeMap<String, String>>> {
     match direct_attribute(rule, name)? {
-        Some(DirectAttributeValue::LabelKeyedStringDict(values)) => Ok(values.clone()),
+        Some(DirectAttributeValue::StringDict(values)) => Ok(Some(values)),
         Some(_) => anyhow::bail!("config_setting attribute `{name}` has the wrong type"),
-        None => Ok(BTreeMap::new()),
+        None => Ok(None),
     }
 }
 
-pub fn label_list(rule: &Rule, name: &str) -> anyhow::Result<Vec<CanonicalLabel<'static>>> {
+fn label_keyed_string_dict<'a>(
+    rule: &'a Rule,
+    name: &str,
+) -> anyhow::Result<Option<&'a BTreeMap<CanonicalLabel<'static>, String>>> {
     match direct_attribute(rule, name)? {
-        Some(DirectAttributeValue::LabelList(values)) => Ok(values.clone()),
+        Some(DirectAttributeValue::LabelKeyedStringDict(values)) => Ok(Some(values)),
+        Some(_) => anyhow::bail!("config_setting attribute `{name}` has the wrong type"),
+        None => Ok(None),
+    }
+}
+
+pub fn label_list<'a>(rule: &'a Rule, name: &str) -> anyhow::Result<&'a [CanonicalLabel<'static>]> {
+    match direct_attribute(rule, name)? {
+        Some(DirectAttributeValue::LabelList(values)) => Ok(values),
         Some(_) => anyhow::bail!("attribute `{name}` has the wrong type"),
-        None => Ok(Vec::new()),
+        None => Ok(&[]),
     }
 }
 
@@ -256,6 +296,18 @@ mod tests {
         }
         for value in ["0", "n", "false", "NO"] {
             assert_eq!(normalize_option_value("force_pic", value).unwrap(), "false");
+        }
+        // Like Bazel, only whole spellings are accepted: no prefixes, padding or other numbers.
+        for value in ["", "maybe", "2", "tru", "yess", " true", "false "] {
+            let error = normalize_option_value("force_pic", value).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("invalid force_pic value `{value}`")
+            );
+            assert_eq!(
+                parse_bool(value),
+                Err(format!("invalid boolean value `{value}`"))
+            );
         }
     }
 
@@ -316,9 +368,10 @@ mod tests {
                 ]),
             ),
         ]);
+        let value = value.to_string();
         assert!(configuration.matches_options(&ConfigurationRequirements {
-            values: BTreeMap::from([("copt".into(), "-Wall".into())]),
-            flag_values: BTreeMap::from([(setting, value.to_string())]),
+            values: BTreeMap::from([("copt", "-Wall")]),
+            flag_values: BTreeMap::from([(setting.as_borrowed(), value.as_str())]),
             ..ConfigurationRequirements::default()
         }));
     }
@@ -333,14 +386,11 @@ mod tests {
     #[test]
     fn specialization_requires_a_strict_superset() {
         let basic = ConfigurationRequirements {
-            values: BTreeMap::from([("cpu".to_owned(), "arm".to_owned())]),
+            values: BTreeMap::from([("cpu", "arm")]),
             ..ConfigurationRequirements::default()
         };
         let specialized = ConfigurationRequirements {
-            values: BTreeMap::from([
-                ("compilation_mode".to_owned(), "dbg".to_owned()),
-                ("cpu".to_owned(), "arm".to_owned()),
-            ]),
+            values: BTreeMap::from([("compilation_mode", "dbg"), ("cpu", "arm")]),
             ..ConfigurationRequirements::default()
         };
         assert!(specialized.is_strict_specialization_of(&basic));
