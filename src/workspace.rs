@@ -15,6 +15,7 @@ use futures::stream::{BoxStream, FuturesUnordered, StreamExt};
 use starlark::environment::FrozenModule;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
@@ -372,11 +373,22 @@ impl Workspace {
                 package_path.clone().into_owned(),
             );
             match self.load_package(root_id).await {
-                Ok(package) => {
-                    for target in select_targets(&package, &selection) {
-                        yield target;
+                Ok(package) => match &selection {
+                    // Like Bazel, an exact pattern names one target, which must exist. Wildcards
+                    // and recursive patterns may match nothing.
+                    PatternSelection::Exact(name) if !include_subpackages => {
+                        let target = package.target(name).ok_or_else(|| NoSuchTarget {
+                            package: package.id().clone(),
+                            name: name.clone().into_owned(),
+                        })?;
+                        yield expand_target(target);
                     }
-                }
+                    _ => {
+                        for target in select_targets(&package, &selection) {
+                            yield target;
+                        }
+                    }
+                },
                 Err(error) if include_subpackages && is_not_found(&error) => {}
                 Err(error) => Err(anyhow::Error::new(error))?,
             }
@@ -410,6 +422,30 @@ fn is_not_found(error: &SharedError) -> bool {
                 .is_some()
     })
 }
+
+/// An exact target pattern names a target that its package does not declare.
+#[derive(Debug)]
+pub struct NoSuchTarget {
+    package: PackageId<'static>,
+    name: String,
+}
+
+impl fmt::Display for NoSuchTarget {
+    /// Bazel's message, which names the label in canonical form: without a repository for the
+    /// main one.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let repository = self.package.repository.as_str();
+        let prefix = if repository.is_empty() { "" } else { "@@" };
+        let (package, name) = (&self.package.package, &self.name);
+        write!(
+            formatter,
+            "no such target '{prefix}{repository}//{package}:{name}': target '{name}' not \
+             declared in package '{package}'"
+        )
+    }
+}
+
+impl std::error::Error for NoSuchTarget {}
 
 #[cfg(test)]
 mod tests {
@@ -598,6 +634,61 @@ mod tests {
         let loads_before = loads.load(Ordering::SeqCst);
         assert!(Arc::ptr_eq(&held, &load("held").await.upgrade().unwrap()));
         assert_eq!(loads.load(Ordering::SeqCst), loads_before);
+    }
+
+    #[tokio::test]
+    async fn exact_patterns_fail_for_missing_targets() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("MODULE.bazel")
+            .write_str("module(name = \"no_such_target\")\n")
+            .unwrap();
+        temp.child("BUILD.bazel")
+            .write_str("filegroup(name = \"present\")\n")
+            .unwrap();
+        let workspace = Workspace::new(
+            temp.path(),
+            Arc::new(InvocationOptions {
+                ignore_dev_dependency: false,
+            }),
+        )
+        .await
+        .unwrap();
+        let expand = |target_kind: TargetPatternKind<'static>| {
+            workspace
+                .clone()
+                .expand_pattern(TargetPattern {
+                    repo: Repo::Canonical(MAIN_REPO),
+                    package: Cow::Borrowed(""),
+                    target_kind,
+                    include_subpackages: false,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let present = expand(TargetPatternKind::Exact("present".into())).await;
+        assert_eq!(present.len(), 1);
+        assert!(present[0].is_ok());
+
+        let missing = expand(TargetPatternKind::Exact("missing".into())).await;
+        let [Err(error)] = missing.as_slice() else {
+            panic!("expected one error, got {missing:?}");
+        };
+        let error = error.downcast_ref::<NoSuchTarget>().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "no such target '//:missing': target 'missing' not declared in package ''"
+        );
+
+        // An external repository's label keeps its canonical repository.
+        let external = NoSuchTarget {
+            package: PackageId::new(CanonicalRepo::new("rules+"), "pkg"),
+            name: "missing".to_owned(),
+        };
+        assert_eq!(
+            external.to_string(),
+            "no such target '@@rules+//pkg:missing': target 'missing' not declared in package \
+             'pkg'"
+        );
     }
 
     #[tokio::test]

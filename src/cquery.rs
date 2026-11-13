@@ -500,18 +500,9 @@ impl<'a> Analysis<'a> {
                         return;
                     }
                 };
-                // An exact pattern names one target, which must exist, as in Bazel. Wildcards
-                // and recursive patterns may match nothing.
-                let exact = match &pattern.target_kind {
-                    TargetPatternKind::Exact(name) if !pattern.include_subpackages => {
-                        Some((pattern.repo.clone(), pattern.package.clone(), name.clone()))
-                    }
-                    _ => None,
-                };
+                // The expander fails for an exact pattern whose target does not exist.
                 let mut expanded = analysis.workspace.clone().expand_pattern(pattern);
-                let mut found = false;
                 while let Some(target) = expanded.next().await {
-                    found = true;
                     yield match target {
                         // The expander still holds this package, so the lookup reuses it.
                         Ok(target) => analysis
@@ -521,20 +512,6 @@ impl<'a> Analysis<'a> {
                             .map_err(|error| error.to_string()),
                         Err(error) => Err(error.to_string()),
                     };
-                }
-                if let Some((repo, package, name)) = exact
-                    && !found
-                {
-                    // Like Bazel's canonical form, main repository labels have no repository.
-                    let repo = match repo {
-                        Repo::Canonical(repo) if repo.as_str().is_empty() => String::new(),
-                        repo => repo.to_string(),
-                    };
-                    yield Err(format!(
-                        "no such target '{repo}//{package}:{name}': target '{name}' not declared \
-                         in package '{package}'"
-                    ));
-                    return;
                 }
             }
         }.boxed();

@@ -154,6 +154,26 @@ impl<'a> Expr<'a> {
                 stream::once(async move { Err(error) }).boxed()
             }
             Expr::Let(name, value, body) => {
+                if !body.inner.references(name) {
+                    // Like Bazel, evaluate the binding before the body even when nothing uses
+                    // it, so its errors still fail the query.
+                    let value = value.inner.eval(ctx, Order::Any);
+                    let body = body.inner.eval(ctx, order);
+                    return async_stream::stream! {
+                        let mut value = value;
+                        while let Some(result) = value.next().await {
+                            if let Err(error) = result {
+                                yield Err(error);
+                                return;
+                            }
+                        }
+                        let mut body = body;
+                        while let Some(result) = body.next().await {
+                            yield result;
+                        }
+                    }
+                    .boxed();
+                }
                 // No reference to the binding needs a stricter order than the body, so one
                 // evaluation in the body's order serves them all.
                 let value = value.inner.eval(ctx, order).tee();

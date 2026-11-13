@@ -172,6 +172,24 @@ pub fn parse(query: &str) -> Result<Spanned<Expr<'_>>, QuerySyntaxError> {
         .map_err(QuerySyntaxError::from)
 }
 
+impl Expr<'_> {
+    /// Whether this expression refers to variable `name`, other than inside a `let` that binds
+    /// `name` again.
+    pub fn references(&self, name: &str) -> bool {
+        match self {
+            Expr::String(_) => false,
+            Expr::Variable(variable) => *variable == name,
+            Expr::Function(_, args) => args.iter().any(|argument| argument.inner.references(name)),
+            Expr::SetOp(_, left, right) => {
+                left.inner.references(name) || right.inner.references(name)
+            }
+            Expr::Let(variable, value, body) => {
+                value.inner.references(name) || (*variable != name && body.inner.references(name))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +252,17 @@ mod tests {
         assert_eq!(parse_expr("@@foo+bar"), Expr::String("@@foo+bar"));
         assert!(parser().parse("union").into_result().is_err());
         assert_eq!(parse_expr("'union'"), Expr::String("union"));
+    }
+
+    #[test]
+    fn references_follow_let_scoping() {
+        assert!(parse_expr("$x").references("x"));
+        assert!(!parse_expr("$x").references("y"));
+        assert!(parse_expr("deps(//:a + $x, 1)").references("x"));
+        // A nested `let` of the same name hides the outer variable in its body...
+        assert!(!parse_expr("let x = //:a in $x").references("x"));
+        // ...but not in its value, which is evaluated in the outer scope.
+        assert!(parse_expr("let x = $x in //:a").references("x"));
+        assert!(parse_expr("let y = //:a in $x ^ $y").references("x"));
     }
 }

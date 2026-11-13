@@ -73,10 +73,50 @@ fn query_basic_exact_targets() {
         .assert()
         .success()
         .stdout("//nested:hello_world_nested\n");
+}
 
+#[test]
+fn query_exact_patterns_must_name_existing_targets() {
+    // Like Bazel, a missing target fails the query, whether alone, as an operand, or in a
+    // binding nothing uses.
+    for (expression, missing, package) in [
+        ("//:not_exist", "//:not_exist", ""),
+        ("//:all + //:not_exist", "//:not_exist", ""),
+        ("//:all - //:not_exist", "//:not_exist", ""),
+        (
+            "//:all ^ //nested:not_exist",
+            "//nested:not_exist",
+            "nested",
+        ),
+        ("deps(//:not_exist)", "//:not_exist", ""),
+        ("let unused = //:not_exist in //:all", "//:not_exist", ""),
+        (
+            "let x = //:all in let x = //:not_exist in $x",
+            "//:not_exist",
+            "",
+        ),
+    ] {
+        let name = missing.rsplit_once(':').unwrap().1;
+        let error = format!(
+            "no such target '{missing}': target '{name}' not declared in package '{package}'"
+        );
+        basic_command()
+            .args(["query", expression])
+            .assert()
+            .code(7)
+            .stdout("")
+            .stderr(predicate::str::contains(error.as_str()));
+        // Streamed output may already include the results found before the error.
+        basic_command()
+            .args(["query", "--order_output=no", expression])
+            .assert()
+            .code(7)
+            .stderr(predicate::str::contains(error.as_str()));
+    }
+
+    // Only exact patterns are checked: subtracting every target is not an error.
     basic_command()
-        .arg("query")
-        .arg("//:not_exist")
+        .args(["query", "//nested/... + //nested:all - //nested:*"])
         .assert()
         .success()
         .stdout("");
