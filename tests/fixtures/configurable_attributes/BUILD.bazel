@@ -1,5 +1,6 @@
 load(
     ":starlark_rules.bzl",
+    "optional_label",
     starlark_alias = "alias",
     starlark_constraint_value = "constraint_value",
 )
@@ -358,5 +359,22 @@ filegroup(
     srcs = select({
         ":starlark_named_constraint": ["arm.txt"],
         "//conditions:default": [],
+    }),
+)
+
+optional_label(
+    name = "optional_label_unset",
+    dep = select({
+        ":arm": ":arm.txt",
+        "//conditions:default": None,
+    }),
+    required = ":common.txt",
+)
+
+optional_label(
+    name = "mandatory_label_unset",
+    required = select({
+        ":arm": ":arm.txt",
+        "//conditions:default": None,
     }),
 )

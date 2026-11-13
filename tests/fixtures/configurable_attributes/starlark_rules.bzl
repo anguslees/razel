@@ -5,3 +5,12 @@ def _implementation(ctx):
 alias = rule(implementation = _implementation)
 
 constraint_value = rule(implementation = _implementation)
+
+# An optional label has no default, so a select() branch of None leaves it unset.
+optional_label = rule(
+    implementation = _implementation,
+    attrs = {
+        "dep": attr.label(),
+        "required": attr.label(mandatory = True),
+    },
+)

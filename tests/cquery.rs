@@ -512,6 +512,57 @@ fn nested_let_bindings_are_evaluated_once() {
 }
 
 #[test]
+fn exact_patterns_must_name_existing_targets() {
+    let error = "no such target '//:does_not_exist': target 'does_not_exist' not declared in \
+                 package ''";
+    for expression in [
+        "//:does_not_exist",
+        "//:selected + //:does_not_exist",
+        "//:selected - //:does_not_exist",
+        "//:selected ^ //:does_not_exist",
+        "deps(//:does_not_exist)",
+        "config(//:does_not_exist, target)",
+        "let unused = //:does_not_exist in //:selected",
+    ] {
+        let result = output(&["cquery", expression]);
+        assert_eq!(result.status.code(), Some(7), "{expression}");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains(error), "{expression}: {stderr}");
+    }
+}
+
+#[test]
+fn none_select_branches_leave_attributes_unset() {
+    // An optional label without a default is unset, while its select() keys stay dependencies.
+    for (args, selected) in [(&[][..], None), (&["--cpu=arm"][..], Some("//:arm.txt"))] {
+        let result = output(&[&["cquery"], args, &["deps(//:optional_label_unset)"]].concat());
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let labels = configured_labels(&result.stdout);
+        let has = |name| labels.iter().any(|(label, _)| *label == name);
+        assert!(has("//:arm") && has("//:common.txt"));
+        assert_eq!(has("//:arm.txt"), selected.is_some());
+    }
+
+    // As in Bazel, a mandatory attribute may not resolve to None.
+    let result = output(&["cquery", "//:mandatory_label_unset"]);
+    assert_eq!(result.status.code(), Some(7));
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("mandatory attribute `required` resolved to None after evaluating select()")
+    );
+    let result = output(&["cquery", "--cpu=arm", "deps(//:mandatory_label_unset)"]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn starlark_rules_with_builtin_names_keep_starlark_semantics() {
     for target in [
         "//:starlark_alias_condition",

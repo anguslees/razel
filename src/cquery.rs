@@ -242,6 +242,15 @@ impl ConfiguredTarget {
 
 type CqueryResult = Result<ConfiguredTarget, String>;
 type CqueryStream<'a> = BoxStream<'a, CqueryResult>;
+/// The configured targets of the universe, shared rather than copied between its readers.
+type UniverseStream<'a> = BoxStream<'a, Result<Arc<ConfiguredTarget>, String>>;
+
+#[cfg(test)]
+thread_local! {
+    /// How many configured targets have been analyzed on this thread, so tests can check that
+    /// analysis is not repeated.
+    static ANALYZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// Borrowed state for configured analysis. It holds no `let` bindings, so long-lived traversal
 /// streams can copy it without capturing binding replay buffers.
@@ -255,18 +264,35 @@ struct Analysis<'a> {
 #[derive(Clone)]
 struct CqueryContext<'a> {
     analysis: Analysis<'a>,
+    /// The universe, traversed and analyzed once however many patterns read it. Each reader has
+    /// its own cursor; results stay buffered only until every reader has seen them.
+    universe: StreamTee<UniverseStream<'a>>,
     /// Each binding is evaluated once and replayed to every reference. A tee buffers only
     /// results that a lagging reference has not consumed yet.
     variables: Vec<(&'a str, StreamTee<CqueryStream<'a>>)>,
 }
 
 impl<'a> CqueryContext<'a> {
+    /// A context whose universe is not traversed until a pattern reads it. Every reader must be
+    /// created before reading starts, as a new reader starts where this context's reader is.
+    fn new(analysis: Analysis<'a>) -> Self {
+        Self {
+            analysis,
+            universe: analysis
+                .walk_universe()
+                .map(|result| result.map(Arc::new))
+                .boxed()
+                .tee(),
+            variables: Vec::new(),
+        }
+    }
+
     fn eval(&self, expr: &'a Expr<'a>) -> CqueryStream<'a> {
         match expr {
             &Expr::String(pattern) => {
                 match crate::bazel::label::parse_target_pattern(pattern, &MAIN_REPO_ROOT) {
                     Ok(pattern) => {
-                        let mut targets = self.analysis.universe();
+                        let mut targets = self.universe.clone();
                         let workspace = self.analysis.workspace;
                         async_stream::stream! {
                             let repository = match &pattern.repo {
@@ -302,10 +328,11 @@ impl<'a> CqueryContext<'a> {
                                             TargetPatternKind::AllTargets => true,
                                         };
                                         if label.repo == repository && package_matches && kind_matches {
-                                            yield Ok(target);
+                                            // Copy only the targets that match.
+                                            yield Ok(Arc::unwrap_or_clone(target));
                                         }
                                     }
-                                    Err(error) => yield Err(error.to_string()),
+                                    Err(error) => yield Err(error),
                                 }
                             }
                         }
@@ -411,7 +438,7 @@ impl<'a> CqueryContext<'a> {
         };
         let configurations = self.analysis.configurations;
         let mut values = self.eval(&args[0].inner);
-        let mut universe = self.analysis.universe();
+        let mut universe = self.universe.clone();
         async_stream::stream! {
             let mut requested = match selector {
                 "target" => Some(ConfigurationKind::Target),
@@ -443,7 +470,7 @@ impl<'a> CqueryContext<'a> {
                             requested = Some(target.configuration);
                             if labels.remove(&target.target.label) {
                                 found = true;
-                                yield Ok(target);
+                                yield Ok(Arc::unwrap_or_clone(target));
                             }
                         }
                     }
@@ -461,7 +488,8 @@ impl<'a> CqueryContext<'a> {
 }
 
 impl<'a> Analysis<'a> {
-    fn universe(&self) -> CqueryStream<'a> {
+    /// Traverses and analyzes the configured closure of the universe's patterns.
+    fn walk_universe(&self) -> CqueryStream<'a> {
         let analysis = *self;
         let roots = async_stream::stream! {
             for pattern in analysis.universe {
@@ -472,8 +500,18 @@ impl<'a> Analysis<'a> {
                         return;
                     }
                 };
+                // An exact pattern names one target, which must exist, as in Bazel. Wildcards
+                // and recursive patterns may match nothing.
+                let exact = match &pattern.target_kind {
+                    TargetPatternKind::Exact(name) if !pattern.include_subpackages => {
+                        Some((pattern.repo.clone(), pattern.package.clone(), name.clone()))
+                    }
+                    _ => None,
+                };
                 let mut expanded = analysis.workspace.clone().expand_pattern(pattern);
+                let mut found = false;
                 while let Some(target) = expanded.next().await {
+                    found = true;
                     yield match target {
                         // The expander still holds this package, so the lookup reuses it.
                         Ok(target) => analysis
@@ -483,6 +521,20 @@ impl<'a> Analysis<'a> {
                             .map_err(|error| error.to_string()),
                         Err(error) => Err(error.to_string()),
                     };
+                }
+                if let Some((repo, package, name)) = exact
+                    && !found
+                {
+                    // Like Bazel's canonical form, main repository labels have no repository.
+                    let repo = match repo {
+                        Repo::Canonical(repo) if repo.as_str().is_empty() => String::new(),
+                        repo => repo.to_string(),
+                    };
+                    yield Err(format!(
+                        "no such target '{repo}//{package}:{name}': target '{name}' not declared \
+                         in package '{package}'"
+                    ));
+                    return;
                 }
             }
         }.boxed();
@@ -532,6 +584,8 @@ impl<'a> Analysis<'a> {
         &self,
         target: &ConfiguredTarget,
     ) -> anyhow::Result<Vec<ConfiguredTarget>> {
+        #[cfg(test)]
+        ANALYZED.set(ANALYZED.get() + 1);
         let loaded = self.required_target(&target.target.label).await?;
         let configuration = target.configuration;
         // The dependencies to load and their configurations. Labels borrow from the target where
@@ -1028,15 +1082,15 @@ where
     let configurations = Configurations::new(&workspace, options).await?;
     let mut universe = Vec::new();
     collect_target_patterns(&ast.inner, &mut universe);
-    let context = CqueryContext {
-        analysis: Analysis {
-            workspace: &workspace,
-            configurations: &configurations,
-            universe: &universe,
-        },
-        variables: Vec::new(),
-    };
+    let context = CqueryContext::new(Analysis {
+        workspace: &workspace,
+        configurations: &configurations,
+        universe: &universe,
+    });
     let mut result = context.eval(&ast.inner);
+    // Every pattern now has its own reader of the universe. Dropping the context's reader, which
+    // never advances, lets the universe buffer release results that every pattern has read.
+    drop(context);
     while let Some(target) = result.next().await {
         let target = target.map_err(|error| anyhow::anyhow!("Cquery evaluation error: {error}"))?;
         if output == QueryOutput::LabelKind {
@@ -1063,20 +1117,18 @@ where
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn universe_loading_is_lazy_and_cancellable() {
+    async fn test_workspace(
+        packages: &[(&str, &str)],
+    ) -> (assert_fs::TempDir, Arc<Workspace>, Configurations) {
         let root = assert_fs::TempDir::new().unwrap();
         std::fs::write(
             root.path().join("MODULE.bazel"),
-            "module(name = 'streaming')",
+            "module(name = 'cquery_test')",
         )
         .unwrap();
-        for (package, source) in [
-            ("a", "filegroup(name = 'early')"),
-            ("z", "fail('late package error')"),
-        ] {
+        for (package, source) in packages {
             let path = root.path().join(package);
-            std::fs::create_dir(&path).unwrap();
+            std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("BUILD.bazel"), source).unwrap();
         }
         let workspace = Workspace::new(
@@ -1094,12 +1146,103 @@ mod tests {
             target_constraints: BTreeSet::new(),
             target_platform_explicit: false,
         };
+        (root, workspace, configurations)
+    }
+
+    /// Evaluates `source` like `cquery()`, returning each result's label up to the first error.
+    async fn evaluate(
+        workspace: &Arc<Workspace>,
+        configurations: &Configurations,
+        source: &str,
+    ) -> Vec<Result<String, String>> {
+        let expression = crate::query_syntax::parse(source).unwrap();
+        let mut universe = Vec::new();
+        collect_target_patterns(&expression.inner, &mut universe);
+        let context = CqueryContext::new(Analysis {
+            workspace,
+            configurations,
+            universe: &universe,
+        });
+        let mut results = context.eval(&expression.inner);
+        drop(context);
+        let mut labels = Vec::new();
+        while let Some(result) = results.next().await {
+            let failed = result.is_err();
+            labels.push(result.map(|target| target.target.label.to_string()));
+            if failed {
+                break;
+            }
+        }
+        labels
+    }
+
+    #[tokio::test]
+    async fn exact_patterns_require_their_target_while_wildcards_may_match_nothing() {
+        let (_root, workspace, configurations) =
+            test_workspace(&[("", "filegroup(name = 'a')"), ("empty", "")]).await;
+        assert_eq!(
+            evaluate(
+                &workspace,
+                &configurations,
+                "//:a + //empty:all + //empty/..."
+            )
+            .await,
+            [Ok("@@//:a".to_owned())]
+        );
+        assert_eq!(
+            evaluate(&workspace, &configurations, "//:a + //:missing").await,
+            [
+                Ok("@@//:a".to_owned()),
+                Err(
+                    "no such target '//:missing': target 'missing' not declared in package ''"
+                        .to_owned()
+                ),
+            ]
+        );
+        assert_eq!(
+            evaluate(&workspace, &configurations, "//empty:missing").await,
+            [Err(
+                "no such target '//empty:missing': target 'missing' not declared in package \
+                 'empty'"
+                    .to_owned()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn every_pattern_shares_one_analysis_of_the_universe() {
+        let targets = (0..32)
+            .map(|index| format!("filegroup(name = 't{index}', srcs = [':common'])\n"))
+            .collect::<String>();
+        let build = format!("{targets}filegroup(name = 'common')\n");
+        let (_root, workspace, configurations) = test_workspace(&[("", &build)]).await;
+        let source = (0..32)
+            .map(|index| format!("//:t{index}"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+
+        ANALYZED.set(0);
+        let results = evaluate(&workspace, &configurations, &source).await;
+        assert_eq!(results.len(), 32);
+        assert!(results.iter().all(Result::is_ok));
+        // The 32 roots and their shared dependency, each analyzed once rather than once per
+        // pattern.
+        assert_eq!(ANALYZED.get(), 33);
+    }
+
+    #[tokio::test]
+    async fn universe_loading_is_lazy_and_cancellable() {
+        let (root, workspace, configurations) = test_workspace(&[
+            ("a", "filegroup(name = 'early')"),
+            ("z", "fail('late package error')"),
+        ])
+        .await;
         let analysis = Analysis {
             workspace: &workspace,
             configurations: &configurations,
             universe: &["//..."],
         };
-        let mut targets = analysis.universe();
+        let mut targets = analysis.walk_universe();
         let first = targets.next().await.unwrap().unwrap();
         assert_eq!(first.target.label.package(), "a");
         assert_eq!(first.target.label.name(), "early");
@@ -1111,7 +1254,7 @@ mod tests {
             "filegroup(name = 'late')",
         )
         .unwrap();
-        let mut targets = analysis.universe();
+        let mut targets = analysis.walk_universe();
         assert_eq!(
             targets.next().await.unwrap().unwrap().target.label.name(),
             "early"

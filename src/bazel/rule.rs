@@ -497,15 +497,21 @@ fn comma_separated<T: fmt::Display>(items: impl Iterator<Item = T> + Clone) -> i
     })
 }
 
-/// The value of a select() branch: its own, or the attribute's default for `None`.
+/// The value of a select() branch. As in Bazel, a `None` branch leaves the attribute as if it were
+/// not set: it takes its default, and an optional label without one is unset.
 fn branch_value<'v>(
     schema: &'v AttributeSchema,
     branch: &'v Option<DirectAttributeValue>,
 ) -> anyhow::Result<&'v DirectAttributeValue> {
-    branch
-        .as_ref()
-        .or(schema.default.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("attribute `{}` has no default value", schema.name))
+    static UNSET: DirectAttributeValue = DirectAttributeValue::None;
+    match branch {
+        Some(value) => Ok(value),
+        None if schema.mandatory => anyhow::bail!(
+            "mandatory attribute `{}` resolved to None after evaluating select()",
+            schema.name
+        ),
+        None => Ok(schema.default.as_ref().unwrap_or(&UNSET)),
+    }
 }
 
 /// Concatenates the parts of a value, as `+` does when combining select()s.
@@ -963,6 +969,47 @@ mod tests {
                 label("arm_dbg"),
                 label("other_arm_dbg")
             )
+        );
+    }
+
+    #[test]
+    fn none_branches_take_the_default_or_leave_labels_unset() {
+        let none_by_default = AttributeValue {
+            parts: vec![AttributeValuePart::Selector(Selector {
+                entries: BTreeMap::new(),
+                default: Some(None),
+                no_match_error: String::new(),
+            })],
+        };
+        let matches = |_: CanonicalLabel<'_>| Ok(None);
+        let optional = AttributeSchema::new(
+            "dep",
+            AttributeType::Label,
+            None,
+            AttributeDependency::Dependency,
+        );
+        assert_eq!(
+            *none_by_default.resolve(&optional, matches).unwrap(),
+            DirectAttributeValue::None
+        );
+        let srcs = AttributeSchema::new(
+            "srcs",
+            AttributeType::LabelList,
+            Some(labels(&["default.txt"])),
+            AttributeDependency::Dependency,
+        );
+        assert_eq!(
+            *none_by_default.resolve(&srcs, matches).unwrap(),
+            labels(&["default.txt"])
+        );
+        let mut required = optional.clone();
+        required.mandatory = true;
+        assert_eq!(
+            none_by_default
+                .resolve(&required, matches)
+                .unwrap_err()
+                .to_string(),
+            "mandatory attribute `dep` resolved to None after evaluating select()"
         );
     }
 
