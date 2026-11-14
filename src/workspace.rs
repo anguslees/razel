@@ -4,7 +4,7 @@ use crate::bazel::InvocationOptions;
 use crate::bazel::label::{
     CanonicalLabel, CanonicalRepo, MAIN_REPO, Repo, TargetPattern, TargetPatternKind,
 };
-use crate::bazel::package::{BoxFileStore, DynFileStore, Package, PackageId};
+use crate::bazel::package::{BoxFileStore, DynFileStore, FileStore, Package, PackageId};
 use crate::bazel::repo::{LocalFileStore, PackageNotFound, Repository};
 use crate::bazel::target::{Target, TargetView};
 use crate::shared_error::SharedError;
@@ -377,9 +377,17 @@ impl Workspace {
                     // Like Bazel, an exact pattern names one target, which must exist. Wildcards
                     // and recursive patterns may match nothing.
                     PatternSelection::Exact(name) if !include_subpackages => {
-                        let target = package.target(name).ok_or_else(|| NoSuchTarget {
-                            package: package.id().clone(),
-                            name: name.clone().into_owned(),
+                        let target = package.target(name).ok_or_else(|| {
+                            let id = package.id();
+                            let build_file = match id.package.as_ref() {
+                                "" => package.build_file_name().to_owned(),
+                                path => format!("{path}/{}", package.build_file_name()),
+                            };
+                            NoSuchTarget {
+                                package: id.clone(),
+                                name: name.clone().into_owned(),
+                                build_file: repository.files().local_path(&build_file),
+                            }
                         })?;
                         yield expand_target(target);
                     }
@@ -428,10 +436,12 @@ fn is_not_found(error: &SharedError) -> bool {
 pub struct NoSuchTarget {
     package: PackageId<'static>,
     name: String,
+    /// The package's BUILD file, if it is on the local filesystem.
+    build_file: Option<PathBuf>,
 }
 
 impl fmt::Display for NoSuchTarget {
-    /// Bazel's message, which names the label in canonical form: without a repository for the
+    /// Bazel's message, which names the label in canonical form, without a repository for the
     /// main one.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let repository = self.package.repository.as_str();
@@ -441,7 +451,11 @@ impl fmt::Display for NoSuchTarget {
             formatter,
             "no such target '{prefix}{repository}//{package}:{name}': target '{name}' not \
              declared in package '{package}'"
-        )
+        )?;
+        if let Some(build_file) = &self.build_file {
+            write!(formatter, " defined by {}", build_file.display())?;
+        }
+        Ok(())
     }
 }
 
@@ -676,13 +690,19 @@ mod tests {
         let error = error.downcast_ref::<NoSuchTarget>().unwrap();
         assert_eq!(
             error.to_string(),
-            "no such target '//:missing': target 'missing' not declared in package ''"
+            format!(
+                "no such target '//:missing': target 'missing' not declared in package '' \
+                 defined by {}",
+                temp.path().join("BUILD.bazel").display()
+            )
         );
 
-        // An external repository's label keeps its canonical repository.
+        // An external repository's label keeps its canonical repository, and a BUILD file that
+        // is not on the local filesystem is not named.
         let external = NoSuchTarget {
             package: PackageId::new(CanonicalRepo::new("rules+"), "pkg"),
             name: "missing".to_owned(),
+            build_file: None,
         };
         assert_eq!(
             external.to_string(),

@@ -319,6 +319,10 @@ impl FileStore for LocalFileStore {
         }
         .boxed()
     }
+
+    fn local_path(&self, path: &str) -> Option<std::path::PathBuf> {
+        Some(self.root.join(path))
+    }
 }
 
 #[derive(Debug)]
@@ -410,6 +414,10 @@ impl FileStore for InMemoryFileStore {
             Ok(entries)
         }
         .boxed()
+    }
+
+    fn local_path(&self, _path: &str) -> Option<std::path::PathBuf> {
+        None
     }
 }
 

@@ -1155,8 +1155,9 @@ mod tests {
 
     #[tokio::test]
     async fn exact_patterns_require_their_target_while_wildcards_may_match_nothing() {
-        let (_root, workspace, configurations) =
+        let (root, workspace, configurations) =
             test_workspace(&[("", "filegroup(name = 'a')"), ("empty", "")]).await;
+        let build_file = |package: &str| root.path().join(package).join("BUILD.bazel");
         assert_eq!(
             evaluate(
                 &workspace,
@@ -1170,19 +1171,20 @@ mod tests {
             evaluate(&workspace, &configurations, "//:a + //:missing").await,
             [
                 Ok("@@//:a".to_owned()),
-                Err(
-                    "no such target '//:missing': target 'missing' not declared in package ''"
-                        .to_owned()
-                ),
+                Err(format!(
+                    "no such target '//:missing': target 'missing' not declared in package '' \
+                     defined by {}",
+                    build_file("").display()
+                )),
             ]
         );
         assert_eq!(
             evaluate(&workspace, &configurations, "//empty:missing").await,
-            [Err(
+            [Err(format!(
                 "no such target '//empty:missing': target 'missing' not declared in package \
-                 'empty'"
-                    .to_owned()
-            )]
+                 'empty' defined by {}",
+                build_file("empty").display()
+            ))]
         );
     }
 

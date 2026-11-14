@@ -537,6 +537,10 @@ pub trait FileStore: Send + Sync + std::fmt::Debug {
     fn read_file(&self, path: &str) -> BoxFuture<'_, Result<Self::File, std::io::Error>>;
 
     fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<DirEntry>, std::io::Error>>;
+
+    /// Where `path` is on the local filesystem, or `None` if this store does not keep its files
+    /// there. Messages use it to name files as Bazel does.
+    fn local_path(&self, path: &str) -> Option<std::path::PathBuf>;
 }
 
 impl<'a, F: File> std::fmt::Debug for DynFileStore<'a, F> {
@@ -580,6 +584,10 @@ impl<F: FileStore + ?Sized> FileStore for std::sync::Arc<F> {
     fn read_dir(&self, path: &str) -> BoxFuture<'_, Result<Vec<DirEntry>, std::io::Error>> {
         (**self).read_dir(path)
     }
+
+    fn local_path(&self, path: &str) -> Option<std::path::PathBuf> {
+        (**self).local_path(path)
+    }
 }
 
 #[derive(Debug)]
@@ -605,6 +613,10 @@ where
 
     fn read_dir(&self, path: &str) -> BoxFuture<'_, std::io::Result<Vec<DirEntry>>> {
         self.0.read_dir(path).boxed()
+    }
+
+    fn local_path(&self, path: &str) -> Option<std::path::PathBuf> {
+        self.0.local_path(path)
     }
 }
 

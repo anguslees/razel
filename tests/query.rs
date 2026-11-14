@@ -97,8 +97,18 @@ fn query_exact_patterns_must_name_existing_targets() {
         ),
     ] {
         let name = missing.rsplit_once(':').unwrap().1;
+        // Bazel names the BUILD file by its absolute path. razel finds the workspace from its
+        // working directory, whose path has symlinks resolved.
+        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/basic")
+            .join(package);
+        let build_file = std::fs::canonicalize(package_dir)
+            .unwrap()
+            .join("BUILD.bazel");
         let error = format!(
-            "no such target '{missing}': target '{name}' not declared in package '{package}'"
+            "no such target '{missing}': target '{name}' not declared in package '{package}' \
+             defined by {}",
+            build_file.display()
         );
         basic_command()
             .args(["query", expression])
