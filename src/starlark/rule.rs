@@ -652,6 +652,7 @@ fn make_attr<'v>(
         ),
         allow_files,
         allow_empty,
+        transition: crate::bazel::rule::AttributeTransition::Target,
     };
     if schema.allow_empty == Some(false)
         && schema.default.as_ref().is_some_and(direct_value_is_empty)
@@ -1085,9 +1086,41 @@ pub(crate) fn convert_attribute(
         }
     }
 
+    for part in &parts {
+        match part {
+            AttributeValuePart::Direct(value) => validate_unique_labels(schema, value)?,
+            AttributeValuePart::Selector(selector) => {
+                for value in selector
+                    .entries
+                    .values()
+                    .chain(selector.default.iter())
+                    .flatten()
+                {
+                    validate_unique_labels(schema, value)?;
+                }
+            }
+        }
+    }
     let value = AttributeValue { parts };
     validate_allow_empty(schema, &value)?;
     Ok(value)
+}
+
+fn validate_unique_labels(
+    schema: &AttributeSchema,
+    value: &DirectAttributeValue,
+) -> starlark::Result<()> {
+    let DirectAttributeValue::LabelList(labels) = value else {
+        return Ok(());
+    };
+    let mut unique = std::collections::BTreeSet::new();
+    if labels.iter().any(|label| !unique.insert(label)) {
+        return Err(starlark_error(format!(
+            "attribute `{}` contains a duplicate label",
+            schema.name
+        )));
+    }
+    Ok(())
 }
 
 fn validate_allow_empty(schema: &AttributeSchema, value: &AttributeValue) -> starlark::Result<()> {

@@ -2,8 +2,9 @@ use crate::bazel::label::CanonicalLabel;
 use crate::bazel::package::{PackageBuilder, PackageDefaults};
 use crate::bazel::repo::Repository;
 use crate::bazel::rule::{
-    AttributeDependency, AttributeSchema, AttributeType, AttributeValue, DirectAttributeValue,
-    RuleClass, RuleClassKind, RuleClassSpec, native_rule_class, native_rule_class_with_kind,
+    AttributeDependency, AttributeSchema, AttributeTransition, AttributeType, AttributeValue,
+    DirectAttributeValue, RuleClass, RuleClassKind, RuleClassSpec, native_rule_class,
+    native_rule_class_with_kind,
 };
 use crate::starlark::rule::{LabelResolver, add_context_globals, convert_attribute};
 use starlark::any::ProvidesStaticType;
@@ -61,6 +62,15 @@ fn label_list_attribute(name: &str) -> AttributeSchema {
     )
 }
 
+fn nodep_label_attribute(name: &str) -> AttributeSchema {
+    attribute(
+        name,
+        AttributeType::Label,
+        None,
+        AttributeDependency::NoDependency,
+    )
+}
+
 static GENRULE: LazyLock<RuleClass> = LazyLock::new(|| {
     let mut outs = attribute(
         "outs",
@@ -77,6 +87,13 @@ static GENRULE: LazyLock<RuleClass> = LazyLock::new(|| {
         AttributeDependency::NoDependency,
     );
     cmd.mandatory = true;
+    let mut tools = attribute(
+        "tools",
+        AttributeType::LabelList,
+        Some(DirectAttributeValue::LabelList(Vec::new())),
+        AttributeDependency::Dependency,
+    );
+    tools.transition = AttributeTransition::Exec;
     native_rule_class(
         "genrule",
         vec![
@@ -86,12 +103,7 @@ static GENRULE: LazyLock<RuleClass> = LazyLock::new(|| {
                 Some(DirectAttributeValue::LabelList(Vec::new())),
                 AttributeDependency::Dependency,
             ),
-            attribute(
-                "tools",
-                AttributeType::LabelList,
-                Some(DirectAttributeValue::LabelList(Vec::new())),
-                AttributeDependency::Dependency,
-            ),
+            tools,
             outs,
             cmd,
         ],
@@ -146,6 +158,79 @@ static SH_BINARY: LazyLock<RuleClass> = LazyLock::new(|| {
         RuleClassKind::Executable,
         ["srcs", "deps", "data"].map(label_list_attribute).into(),
     )
+});
+
+fn nonconfigurable(mut schema: AttributeSchema) -> AttributeSchema {
+    schema.configurable = false;
+    schema.selector_conditions_are_dependencies = false;
+    schema
+}
+
+static CONFIG_SETTING: LazyLock<RuleClass> = LazyLock::new(|| {
+    native_rule_class(
+        "config_setting",
+        vec![
+            nonconfigurable(attribute(
+                "values",
+                AttributeType::StringDict,
+                Some(DirectAttributeValue::StringDict(BTreeMap::new())),
+                AttributeDependency::NoDependency,
+            )),
+            nonconfigurable(attribute(
+                "define_values",
+                AttributeType::StringDict,
+                Some(DirectAttributeValue::StringDict(BTreeMap::new())),
+                AttributeDependency::NoDependency,
+            )),
+            nonconfigurable(attribute(
+                "flag_values",
+                AttributeType::LabelKeyedStringDict,
+                Some(DirectAttributeValue::LabelKeyedStringDict(BTreeMap::new())),
+                AttributeDependency::Dependency,
+            )),
+            nonconfigurable(label_list_attribute("constraint_values")),
+        ],
+    )
+});
+
+static CONSTRAINT_SETTING: LazyLock<RuleClass> = LazyLock::new(|| {
+    native_rule_class(
+        "constraint_setting",
+        vec![
+            nonconfigurable(nodep_label_attribute("default_constraint_value")),
+            nonconfigurable(nodep_label_attribute("refines_constraint_value")),
+        ],
+    )
+});
+
+static CONSTRAINT_VALUE: LazyLock<RuleClass> = LazyLock::new(|| {
+    let mut constraint_setting = label_attribute("constraint_setting");
+    constraint_setting.mandatory = true;
+    constraint_setting.configurable = false;
+    constraint_setting.selector_conditions_are_dependencies = false;
+    native_rule_class("constraint_value", vec![constraint_setting])
+});
+
+static PLATFORM: LazyLock<RuleClass> = LazyLock::new(|| {
+    native_rule_class(
+        "platform",
+        vec![
+            nonconfigurable(label_list_attribute("constraint_values")),
+            nonconfigurable(label_list_attribute("parents")),
+            nonconfigurable(attribute(
+                "flags",
+                AttributeType::StringList,
+                Some(DirectAttributeValue::StringList(Vec::new())),
+                AttributeDependency::NoDependency,
+            )),
+        ],
+    )
+});
+
+static ALIAS: LazyLock<RuleClass> = LazyLock::new(|| {
+    let mut actual = label_attribute("actual");
+    actual.mandatory = true;
+    native_rule_class("alias", vec![actual])
 });
 
 fn instantiate_native<'v>(
@@ -239,6 +324,46 @@ pub(crate) fn build_globals(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
         instantiate_native(name, kwargs, eval, &SH_BINARY)
+    }
+
+    fn config_setting<'v>(
+        #[starlark(require = named)] name: &str,
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<NoneType> {
+        instantiate_native(name, kwargs, eval, &CONFIG_SETTING)
+    }
+
+    fn constraint_setting<'v>(
+        #[starlark(require = named)] name: &str,
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<NoneType> {
+        instantiate_native(name, kwargs, eval, &CONSTRAINT_SETTING)
+    }
+
+    fn constraint_value<'v>(
+        #[starlark(require = named)] name: &str,
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<NoneType> {
+        instantiate_native(name, kwargs, eval, &CONSTRAINT_VALUE)
+    }
+
+    fn platform<'v>(
+        #[starlark(require = named)] name: &str,
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<NoneType> {
+        instantiate_native(name, kwargs, eval, &PLATFORM)
+    }
+
+    fn alias<'v>(
+        #[starlark(require = named)] name: &str,
+        #[starlark(kwargs)] kwargs: SmallMap<&str, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<NoneType> {
+        instantiate_native(name, kwargs, eval, &ALIAS)
     }
 
     fn exports_files<'v>(
