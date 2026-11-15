@@ -73,10 +73,60 @@ fn query_basic_exact_targets() {
         .assert()
         .success()
         .stdout("//nested:hello_world_nested\n");
+}
 
+#[test]
+fn query_exact_patterns_must_name_existing_targets() {
+    // Like Bazel, a missing target fails the query, whether alone, as an operand, or in a
+    // binding nothing uses.
+    for (expression, missing, package) in [
+        ("//:not_exist", "//:not_exist", ""),
+        ("//:all + //:not_exist", "//:not_exist", ""),
+        ("//:all - //:not_exist", "//:not_exist", ""),
+        (
+            "//:all ^ //nested:not_exist",
+            "//nested:not_exist",
+            "nested",
+        ),
+        ("deps(//:not_exist)", "//:not_exist", ""),
+        ("let unused = //:not_exist in //:all", "//:not_exist", ""),
+        (
+            "let x = //:all in let x = //:not_exist in $x",
+            "//:not_exist",
+            "",
+        ),
+    ] {
+        let name = missing.rsplit_once(':').unwrap().1;
+        // Bazel names the BUILD file by its absolute path. razel finds the workspace from its
+        // working directory, whose path has symlinks resolved.
+        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/basic")
+            .join(package);
+        let build_file = std::fs::canonicalize(package_dir)
+            .unwrap()
+            .join("BUILD.bazel");
+        let error = format!(
+            "no such target '{missing}': target '{name}' not declared in package '{package}' \
+             defined by {}",
+            build_file.display()
+        );
+        basic_command()
+            .args(["query", expression])
+            .assert()
+            .code(7)
+            .stdout("")
+            .stderr(predicate::str::contains(error.as_str()));
+        // Streamed output may already include the results found before the error.
+        basic_command()
+            .args(["query", "--order_output=no", expression])
+            .assert()
+            .code(7)
+            .stderr(predicate::str::contains(error.as_str()));
+    }
+
+    // Only exact patterns are checked: subtracting every target is not an error.
     basic_command()
-        .arg("query")
-        .arg("//:not_exist")
+        .args(["query", "//nested/... + //nested:all - //nested:*"])
         .assert()
         .success()
         .stdout("");
@@ -208,12 +258,61 @@ fn query_all_targets_alias_matches_star() {
 }
 
 #[test]
-fn query_union_does_not_introduce_cross_operand_edges() {
+fn query_orders_results_by_label_unless_unordered() {
     inventory_command()
         .args(["query", "//:group + //:custom.out"])
         .assert()
         .success()
+        .stdout("//:custom.out\n//:group\n");
+
+    inventory_command()
+        .args(["query", "--order_output=no", "//:group + //:custom.out"])
+        .assert()
+        .success()
         .stdout("//:group\n//:custom.out\n");
+
+    // Both orders select the same targets.
+    let lines = |args: &[&str]| {
+        let output = inventory_command().args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    for expression in [
+        "//:* - //:all",
+        "//... ^ //:*",
+        "//nested:* + //:all + //:group",
+        "let targets = //...:* in $targets - //:* + $targets ^ //nested:all",
+        "deps(//nested:nested_group) + //:group",
+    ] {
+        let sorted = lines(&["query", expression]);
+        let mut unordered = lines(&["query", "--order_output=no", expression]);
+        unordered.sort();
+        // These labels sort like their strings, as all their packages are `` or `nested`.
+        assert_eq!(sorted, unordered, "{expression}");
+        assert!(!sorted.is_empty(), "{expression}");
+    }
+}
+
+#[test]
+fn query_dependency_orders_are_not_supported_yet() {
+    for order in ["deps", "full"] {
+        inventory_command()
+            .args(["query", &format!("--order_output={order}"), "//:all"])
+            .assert()
+            .code(2)
+            .stdout("")
+            .stderr(predicate::str::contains(format!(
+                "--order_output={order} is not supported yet"
+            )));
+    }
 }
 
 #[test]
@@ -290,6 +389,16 @@ fn recursive_query_does_not_require_prefix_package() {
 fn recursive_query_streams_results_before_a_late_package_error() {
     fixture_command("recursive_streaming")
         .args(["query", "//..."])
+        .assert()
+        .failure()
+        .stdout("//a:early\n")
+        .stderr(predicate::str::contains("missing.bzl"));
+}
+
+#[test]
+fn deps_query_preserves_results_before_a_late_package_error() {
+    fixture_command("recursive_streaming")
+        .args(["query", "deps(//...)"])
         .assert()
         .failure()
         .stdout("//a:early\n")

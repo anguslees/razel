@@ -170,3 +170,17 @@ rust_test(
     version = "0.1.0",
     deps = _INTEGRATION_TEST_DEPS,
 )
+
+rust_test(
+    name = "cquery_tests",
+    srcs = ["tests/cquery.rs"],
+    aliases = aliases(),
+    data = [":razel"] + glob(["tests/fixtures/configurable_attributes/**"]),
+    rustc_env = {
+        "CARGO_BIN_EXE_razel": "$(rootpath :razel)",
+        "CARGO_MANIFEST_DIR": ".",
+    },
+    size = "small",
+    version = "0.1.0",
+    deps = _INTEGRATION_TEST_DEPS,
+)

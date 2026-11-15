@@ -1,4 +1,5 @@
 pub(crate) mod bzlmod;
+pub(crate) mod config;
 pub(crate) mod label;
 pub(crate) mod package;
 pub(crate) mod repo;

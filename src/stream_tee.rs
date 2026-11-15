@@ -42,6 +42,8 @@ struct SharedState<S: Stream> {
 }
 
 impl<S: Stream> SharedState<S> {
+    /// Releases the buffered items that every consumer has read. Afterwards the buffer starts at
+    /// the slowest consumer's cursor, so only that consumer's progress can release more.
     fn gc(&mut self) {
         if self.cursors.is_empty() {
             // If there are no consumers left, we can clear the entire buffer
@@ -123,9 +125,13 @@ where
             // The item is already in the buffer!
             let item = state.buffer[relative_index].clone();
 
-            // Advance cursor and GC
+            // Advance the cursor. Only a consumer at the front of the buffer can be the slowest,
+            // so only its reads can release items; finding the new slowest is linear in the
+            // number of consumers.
             *state.cursors.get_mut(&self.id).expect("cursor must exist") += 1;
-            state.gc();
+            if relative_index == 0 {
+                state.gc();
+            }
 
             return Poll::Ready(Some(item));
         }
@@ -149,7 +155,11 @@ where
                         waker.wake();
                     }
                 }
-                state.gc();
+                // Only when the buffer was empty can this consumer have been the slowest;
+                // otherwise a slower consumer still needs the buffered items.
+                if relative_index == 0 {
+                    state.gc();
+                }
 
                 Poll::Ready(Some(item))
             }
@@ -272,5 +282,43 @@ mod tests {
         while tee.next().await.is_some() {
             assert!(tee.shared.lock().expect("Mutex poisoned").buffer.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn test_buffer_follows_the_slowest_consumer() {
+        let mut consumers = vec![stream::iter(0..10).tee()];
+        for _ in 0..3 {
+            consumers.push(consumers[0].clone());
+        }
+        let buffered = |consumers: &Vec<StreamTee<_>>| {
+            let state = consumers[0].shared.lock().expect("Mutex poisoned");
+            (state.buffer_start_index, state.buffer.len())
+        };
+
+        // Consumers read different amounts, so the slowest is not the last to read.
+        for (index, reads) in [6, 2, 9, 4].into_iter().enumerate() {
+            for expected in 0..reads {
+                assert_eq!(consumers[index].next().await, Some(expected));
+            }
+        }
+        assert_eq!(buffered(&consumers), (2, 7));
+
+        // Reads by consumers ahead of the slowest release nothing.
+        assert_eq!(consumers[2].next().await, Some(9));
+        assert_eq!(consumers[0].next().await, Some(6));
+        assert_eq!(buffered(&consumers), (2, 8));
+
+        // The slowest consumer releases items up to the next slowest.
+        for expected in 2..5 {
+            assert_eq!(consumers[1].next().await, Some(expected));
+        }
+        assert_eq!(buffered(&consumers), (4, 6));
+        drop(consumers.remove(3));
+        assert_eq!(buffered(&consumers), (5, 5));
+
+        for consumer in &mut consumers {
+            while consumer.next().await.is_some() {}
+        }
+        assert_eq!(buffered(&consumers), (10, 0));
     }
 }

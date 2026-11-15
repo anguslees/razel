@@ -1,0 +1,380 @@
+load(
+    ":starlark_rules.bzl",
+    "optional_label",
+    starlark_alias = "alias",
+    starlark_constraint_value = "constraint_value",
+)
+
+config_setting(
+    name = "arm",
+    values = {"cpu": "arm"},
+)
+
+config_setting(
+    name = "arm_dbg",
+    values = {
+        "compilation_mode": "dbg",
+        "cpu": "arm",
+    },
+)
+
+config_setting(
+    name = "feature_on",
+    define_values = {"feature": "on"},
+)
+
+config_setting(
+    name = "pic",
+    values = {"force_pic": "yes"},
+)
+
+config_setting(
+    name = "pic_short_spelling",
+    values = {"force_pic": "T"},
+)
+
+config_setting(
+    name = "arm_feature",
+    values = {"cpu": "arm"},
+    define_values = {"feature": "on"},
+)
+
+config_setting(
+    name = "arm_define_value",
+    values = {"define": "feature=on"},
+)
+
+config_setting(
+    name = "host_x86",
+    values = {"cpu": "x86"},
+)
+
+config_setting(
+    name = "never",
+    values = {"cpu": "never"},
+)
+
+constraint_setting(name = "color")
+
+constraint_value(
+    name = "red",
+    constraint_setting = ":color",
+)
+
+constraint_value(
+    name = "blue",
+    constraint_setting = ":color",
+)
+
+platform(
+    name = "red_platform",
+    constraint_values = [":red"],
+)
+
+platform(
+    name = "all",
+    constraint_values = [":red"],
+)
+
+platform(
+    name = "all-targets",
+    constraint_values = [":red"],
+)
+
+alias(
+    name = "red_platform_alias",
+    actual = ":red_platform",
+)
+
+platform(
+    name = "invalid_color_platform",
+    constraint_values = [":red", ":blue"],
+)
+
+platform(
+    name = "unsupported_flags_platform",
+    flags = ["--cpu=arm"],
+)
+
+alias(
+    name = "red_alias",
+    actual = ":red",
+)
+
+platform(
+    name = "alias_red_platform",
+    constraint_values = [":red_alias"],
+)
+
+config_setting(
+    name = "is_red",
+    constraint_values = [":red"],
+)
+
+config_setting(
+    name = "is_red_platform",
+    values = {"platforms": "//:red_platform"},
+)
+
+filegroup(
+    name = "selected",
+    srcs = ["common.txt"] + select({
+        ":arm": ["arm.txt"],
+        "//conditions:default": ["other.txt"],
+    }) + select({
+        ":feature_on": ["feature.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+alias(
+    name = "selected_alias",
+    actual = select({
+        ":arm": ":selected",
+        "//conditions:default": ":tool",
+    }),
+)
+
+alias(
+    name = "arm_alias",
+    actual = ":arm",
+)
+
+alias(
+    name = "condition_cycle_a",
+    actual = select({
+        ":condition_cycle_b": ":arm",
+        "//conditions:default": ":arm",
+    }),
+)
+
+alias(
+    name = "condition_cycle_b",
+    actual = ":condition_cycle_a",
+)
+
+filegroup(
+    name = "condition_alias_cycle",
+    srcs = select({
+        ":condition_cycle_a": ["arm.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "alias_condition",
+    srcs = select({
+        ":arm_alias": ["arm.txt"],
+        "//conditions:default": ["other.txt"],
+    }),
+)
+
+filegroup(
+    name = "specialized",
+    srcs = select({
+        ":arm": ["arm.txt"],
+        ":arm_dbg": ["arm_dbg.txt"],
+        "//conditions:default": ["other.txt"],
+    }),
+)
+
+filegroup(
+    name = "equal_matches",
+    srcs = select({
+        ":arm": ["same.txt"],
+        ":pic": ["same.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "short_bool_spelling",
+    srcs = select({
+        ":pic_short_spelling": ["same.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "maximal_equal_matches",
+    srcs = select({
+        ":arm": ["other.txt"],
+        ":arm_dbg": ["same.txt"],
+        ":arm_feature": ["same.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "define_specialization",
+    srcs = select({
+        ":arm_define_value": ["other.txt"],
+        ":arm_feature": ["feature.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "ambiguous",
+    srcs = select({
+        ":arm": ["arm.txt"],
+        ":feature_on": ["feature.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "no_match",
+    srcs = select(
+        {":never": ["never.txt"]},
+        no_match_error = "choose a supported CPU",
+    ),
+)
+
+filegroup(
+    name = "transitive_no_match",
+    srcs = [":no_match"],
+)
+
+filegroup(
+    name = "constraint_selected",
+    srcs = select({
+        ":red": ["direct_red.txt"],
+        "//conditions:default": ["not_red.txt"],
+    }) + select({
+        ":is_red": ["setting_red.txt"],
+        "//conditions:default": [],
+    }) + select({
+        ":is_red_platform": ["platform_red.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "red_compatible",
+    srcs = ["common.txt"],
+    target_compatible_with = [":red"],
+)
+
+filegroup(
+    name = "blue_incompatible",
+    srcs = ["common.txt"],
+    target_compatible_with = [":blue"],
+)
+
+# Incompatibility is decided before this unmatched select() is resolved.
+filegroup(
+    name = "blue_incompatible_unresolved",
+    srcs = select({":never": ["never.txt"]}),
+    target_compatible_with = select({
+        ":never": [],
+        "//conditions:default": [":blue"],
+    }),
+)
+
+filegroup(
+    name = "blue_dependent",
+    srcs = [":blue_incompatible"],
+)
+
+filegroup(
+    name = "tool",
+    srcs = select({
+        ":host_x86": ["host.txt"],
+        "//conditions:default": ["target.txt"],
+    }),
+)
+
+genrule(
+    name = "generated",
+    srcs = [],
+    outs = ["generated.txt"],
+    tools = [":tool"],
+    cmd = "touch $@",
+)
+
+filegroup(
+    name = "shared",
+    srcs = ["common.txt"],
+)
+
+filegroup(
+    name = "diamond_a",
+    srcs = [":shared"],
+)
+
+filegroup(
+    name = "diamond_b",
+    srcs = [":shared"],
+)
+
+filegroup(
+    name = "diamond_root",
+    srcs = [":diamond_a", ":diamond_b"],
+)
+
+filegroup(
+    name = "cycle_a",
+    srcs = [":cycle_b"],
+)
+
+filegroup(
+    name = "cycle_b",
+    srcs = [":cycle_a"],
+)
+
+filegroup(name = "fake_flag")
+
+config_setting(
+    name = "unsupported_flag_value",
+    flag_values = {":fake_flag": "on"},
+)
+
+config_setting(name = "empty_setting")
+
+config_setting(
+    name = "invalid_constraint_setting",
+    constraint_values = [":red", ":blue"],
+)
+
+constraint_setting(
+    name = "unsupported_refinement",
+    refines_constraint_value = ":red",
+)
+
+starlark_alias(name = "starlark_named_alias")
+
+filegroup(
+    name = "starlark_alias_condition",
+    srcs = select({
+        ":starlark_named_alias": ["arm.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+starlark_constraint_value(name = "starlark_named_constraint")
+
+filegroup(
+    name = "starlark_constraint_condition",
+    srcs = select({
+        ":starlark_named_constraint": ["arm.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+optional_label(
+    name = "optional_label_unset",
+    dep = select({
+        ":arm": ":arm.txt",
+        "//conditions:default": None,
+    }),
+    required = ":common.txt",
+)
+
+optional_label(
+    name = "mandatory_label_unset",
+    required = select({
+        ":arm": ":arm.txt",
+        "//conditions:default": None,
+    }),
+)

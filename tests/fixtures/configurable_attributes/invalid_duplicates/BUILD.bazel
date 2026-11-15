@@ -1,0 +1,12 @@
+config_setting(
+    name = "arm",
+    values = {"cpu": "arm"},
+)
+
+filegroup(
+    name = "duplicate_selected_label",
+    srcs = select({
+        ":arm": ["//:same.txt", "//:same.txt"],
+        "//conditions:default": [],
+    }),
+)

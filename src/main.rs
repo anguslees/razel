@@ -1,6 +1,6 @@
 use crate::bazel::InvocationOptions;
-use crate::query::QueryOutput;
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use crate::query::{OrderOutput, QueryOutput};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use fastrace::collector::ConsoleReporter;
 use std::fmt;
 use std::path::PathBuf;
@@ -11,7 +11,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod bazel;
 mod bep;
+mod cquery;
 mod query;
+mod query_syntax;
 mod shared_error;
 mod starlark;
 pub mod stream_tee;
@@ -55,17 +57,214 @@ pub enum Commands {
     /// Prints version information
     Version,
     /// Builds the specified targets
-    Build { targets: Vec<String> },
-    /// Tests the specified targets
-    Test { targets: Vec<String> },
-    /// Runs the specified target
-    Run { target: String },
-    /// Queries for information about the build graph
-    Query {
-        #[arg(long, value_enum, default_value_t = QueryOutput::Label)]
-        output: QueryOutput,
-        query: String,
+    Build {
+        #[command(flatten)]
+        options: BuildOptions,
+        targets: Vec<String>,
     },
+    /// Tests the specified targets
+    Test {
+        #[command(flatten)]
+        options: BuildOptions,
+        targets: Vec<String>,
+    },
+    /// Runs the specified target
+    Run {
+        #[command(flatten)]
+        options: BuildOptions,
+        target: String,
+    },
+    /// Queries for information about the build graph
+    Query(QueryArgs),
+    /// Queries the configured target graph
+    Cquery(CqueryArgs),
+}
+
+/// Options of every query command, like Bazel's `CommonQueryOptions`.
+#[derive(Args, Debug)]
+pub struct CommonQueryArgs {
+    #[arg(long, value_enum, default_value_t = QueryOutput::Label)]
+    output: QueryOutput,
+    #[arg(required_unless_present = "query_file", num_args = 1..)]
+    query: Vec<String>,
+    #[arg(long = "query_file", conflicts_with = "query")]
+    query_file: Option<std::path::PathBuf>,
+}
+
+impl CommonQueryArgs {
+    async fn expression(&self) -> anyhow::Result<String> {
+        use anyhow::Context;
+
+        match &self.query_file {
+            Some(path) => {
+                // Bazel reports the file relative to the client's working directory.
+                let path =
+                    std::env::current_dir().map_or_else(|_| path.clone(), |cwd| cwd.join(path));
+                tokio::fs::read_to_string(&path)
+                    .await
+                    .with_context(|| format!("I/O error reading from {}", path.display()))
+            }
+            None => Ok(self.query.join(" ")),
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct QueryArgs {
+    #[command(flatten)]
+    query: CommonQueryArgs,
+    /// How to order the results
+    #[arg(long = "order_output", value_enum, default_value_t = OrderOutput::Auto)]
+    order_output: OrderOutput,
+}
+
+#[derive(Args, Debug)]
+pub struct CqueryArgs {
+    #[command(flatten)]
+    query: CommonQueryArgs,
+    #[command(flatten)]
+    build: BuildOptions,
+}
+
+/// Options shared by commands that perform configured analysis.
+#[derive(Args, Debug)]
+pub struct BuildOptions {
+    #[arg(long, default_value = default_cpu())]
+    cpu: String,
+    #[arg(long = "host_cpu", default_value = default_cpu())]
+    host_cpu: String,
+    #[arg(
+        short = 'c',
+        long = "compilation_mode",
+        default_value = "fastbuild",
+        value_parser = ["fastbuild", "dbg", "opt"]
+    )]
+    compilation_mode: String,
+    #[arg(
+        long = "host_compilation_mode",
+        default_value = "opt",
+        value_parser = ["fastbuild", "dbg", "opt"]
+    )]
+    host_compilation_mode: String,
+    #[arg(
+        long = "force_pic",
+        require_equals = true,
+        default_missing_value = "true",
+        num_args(0..=1),
+        value_parser = bazel::config::parse_bool,
+        overrides_with = "no_force_pic"
+    )]
+    force_pic: Option<bool>,
+    #[arg(
+        long = "noforce_pic",
+        require_equals = true,
+        default_missing_value = "true",
+        num_args(0..=1),
+        value_parser = bazel::config::parse_bool
+    )]
+    no_force_pic: Option<bool>,
+    #[arg(long = "define", value_parser = parse_define)]
+    defines: Vec<(String, String)>,
+    #[arg(long = "platforms")]
+    platform: Option<String>,
+}
+
+fn parse_define(value: &str) -> Result<(String, String), String> {
+    let (name, value) = value
+        .split_once('=')
+        .ok_or_else(|| "defines must have the form NAME=VALUE".to_owned())?;
+    if name.is_empty() {
+        return Err("define name cannot be empty".to_owned());
+    }
+    Ok((name.to_owned(), value.to_owned()))
+}
+
+fn default_cpu() -> &'static str {
+    cpu_for_host(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn cpu_for_host(os: &str, architecture: &str) -> &'static str {
+    match (os, architecture) {
+        ("macos", "aarch64") => "darwin_arm64",
+        ("macos", "x86_64") => "darwin_x86_64",
+        ("windows", "x86_64") => "x64_windows",
+        ("windows", "aarch64") => "arm64_windows",
+        ("freebsd", _) => "freebsd",
+        ("openbsd", _) => "openbsd",
+        ("linux", "x86") => "piii",
+        ("linux", "x86_64") => "k8",
+        ("linux", "powerpc" | "powerpc64") => "ppc",
+        ("linux", "arm") => "arm",
+        ("linux", "aarch64") => "aarch64",
+        ("linux", "s390x") => "s390x",
+        ("linux", "mips64") => "mips64",
+        ("linux", "riscv64") => "riscv64",
+        ("linux", "loongarch64") => "loongarch64",
+        _ => "unknown",
+    }
+}
+
+#[test]
+fn host_cpu_defaults_use_bazel_names() {
+    for (os, architecture, expected) in [
+        ("macos", "aarch64", "darwin_arm64"),
+        ("macos", "x86_64", "darwin_x86_64"),
+        ("windows", "x86_64", "x64_windows"),
+        ("windows", "aarch64", "arm64_windows"),
+        ("linux", "x86", "piii"),
+        ("linux", "x86_64", "k8"),
+        ("linux", "aarch64", "aarch64"),
+        ("linux", "powerpc64", "ppc"),
+        ("freebsd", "x86_64", "freebsd"),
+        ("openbsd", "aarch64", "openbsd"),
+        ("other", "x86_64", "unknown"),
+    ] {
+        assert_eq!(cpu_for_host(os, architecture), expected);
+    }
+}
+
+#[test]
+fn build_boolean_flags_accept_bazel_spellings() {
+    for command in ["build", "test", "run", "cquery"] {
+        for (value, expected) in [
+            ("true", true),
+            ("T", true),
+            ("1", true),
+            ("YES", true),
+            ("y", true),
+            ("false", false),
+            ("F", false),
+            ("0", false),
+            ("NO", false),
+            ("n", false),
+        ] {
+            for flag in ["force_pic", "noforce_pic"] {
+                let cli = Cli::try_parse_from([
+                    "razel",
+                    command,
+                    &format!("--{flag}={value}"),
+                    "//:target",
+                ])
+                .unwrap();
+                let options = match cli.command {
+                    Commands::Build { options, .. }
+                    | Commands::Test { options, .. }
+                    | Commands::Run { options, .. } => options,
+                    Commands::Cquery(args) => args.build,
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    if flag == "force_pic" {
+                        options.force_pic
+                    } else {
+                        options.no_force_pic
+                    },
+                    Some(expected)
+                );
+            }
+        }
+        assert!(Cli::try_parse_from(["razel", command, "--force_pic=maybe", "//:target"]).is_err());
+    }
 }
 
 #[test]
@@ -75,20 +274,69 @@ fn verify_cli() {
     let cli = Cli::try_parse_from(["razel", "query", "//:all"]).unwrap();
     assert!(matches!(
         cli.command,
-        Commands::Query {
-            output: QueryOutput::Label,
-            ..
-        }
+        Commands::Query(QueryArgs {
+            query: CommonQueryArgs {
+                output: QueryOutput::Label,
+                ..
+            },
+            order_output: OrderOutput::Auto,
+        })
     ));
 
-    let cli = Cli::try_parse_from(["razel", "query", "--output=label_kind", "//:all"]).unwrap();
+    let cli = Cli::try_parse_from([
+        "razel",
+        "query",
+        "--output=label_kind",
+        "--order_output=no",
+        "//:all",
+    ])
+    .unwrap();
     assert!(matches!(
         cli.command,
-        Commands::Query {
-            output: QueryOutput::LabelKind,
-            ..
-        }
+        Commands::Query(QueryArgs {
+            query: CommonQueryArgs {
+                output: QueryOutput::LabelKind,
+                ..
+            },
+            order_output: OrderOutput::No,
+        })
     ));
+    // Like Bazel, cquery has no --order_output.
+    assert!(Cli::try_parse_from(["razel", "cquery", "--order_output=no", "//:all"]).is_err());
+
+    let cli = Cli::try_parse_from([
+        "razel",
+        "cquery",
+        "--cpu=arm",
+        "--define=feature=on",
+        "deps(//:all)",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Cquery(CqueryArgs { build: BuildOptions { cpu, defines, .. }, .. })
+            if cpu == "arm" && defines == [("feature".to_owned(), "on".to_owned())]
+    ));
+
+    for command in ["build", "test", "run", "cquery"] {
+        let cli = Cli::try_parse_from([
+            "razel",
+            command,
+            "--cpu=arm",
+            "--define=feature=on",
+            "//:target",
+        ])
+        .unwrap();
+        let build = match cli.command {
+            Commands::Build { options, .. }
+            | Commands::Test { options, .. }
+            | Commands::Run { options, .. } => options,
+            Commands::Cquery(args) => args.build,
+            _ => unreachable!(),
+        };
+        assert_eq!(build.cpu, "arm");
+        assert_eq!(build.defines, [("feature".to_owned(), "on".to_owned())]);
+    }
 }
 
 #[derive(Debug)]
@@ -96,7 +344,7 @@ enum RazelError {
     Cli(clap::Error),
     BuildFailure(anyhow::Error),
     CommandLineError(anyhow::Error),
-    QuerySyntax(query::QuerySyntaxError),
+    QuerySyntax(query_syntax::QuerySyntaxError),
     QueryFailure(anyhow::Error),
     Interrupted(anyhow::Error),
     LocalEnvironmentalError(anyhow::Error),
@@ -153,6 +401,9 @@ impl RazelError {
     fn from_query(error: query::QueryError) -> Self {
         match error {
             query::QueryError::Syntax(error) => Self::QuerySyntax(error),
+            error @ query::QueryError::UnsupportedOrderOutput(_) => {
+                Self::CommandLineError(error.into())
+            }
             query::QueryError::NotInWorkspace(error) => Self::CommandLineError(error.into()),
             query::QueryError::Environment(error) | query::QueryError::Output(error) => {
                 Self::LocalEnvironmentalError(error.into())
@@ -286,33 +537,60 @@ async fn run() -> Result<(), RazelError> {
                 println!("Razel version: {}", env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
-            Commands::Build { targets } => {
+            Commands::Build { targets, .. } => {
                 println!("Building targets: {targets:?}");
                 bep::pattern_aborted();
                 Err(RazelError::BuildFailure(anyhow::anyhow!(
                     "Build command is not yet implemented."
                 )))
             }
-            Commands::Test { targets } => {
+            Commands::Test { targets, .. } => {
                 println!("Testing targets: {targets:?}");
                 bep::pattern_aborted();
                 Err(RazelError::BuildFailure(anyhow::anyhow!(
                     "Test command is not yet implemented."
                 )))
             }
-            Commands::Run { target } => {
+            Commands::Run { target, .. } => {
                 println!("Running target: {target}");
                 bep::pattern_aborted();
                 Err(RazelError::BuildFailure(anyhow::anyhow!(
                     "Run command is not yet implemented."
                 )))
             }
-            Commands::Query {
-                output,
-                query: query_str,
-            } => query::query(&mut stdout, options, *output, query_str)
+            Commands::Query(args) => {
+                // Bazel classifies this as QUERY_FILE_READ_FAILURE, a command-line error.
+                let expression = args
+                    .query
+                    .expression()
+                    .await
+                    .map_err(RazelError::CommandLineError)?;
+                query::query(
+                    &mut stdout,
+                    options,
+                    args.query.output,
+                    args.order_output,
+                    &expression,
+                )
                 .await
-                .map_err(RazelError::from_query),
+                .map_err(RazelError::from_query)
+            }
+            Commands::Cquery(args) => {
+                let expression = args
+                    .query
+                    .expression()
+                    .await
+                    .map_err(RazelError::CommandLineError)?;
+                cquery::cquery(
+                    &mut stdout,
+                    options,
+                    &args.build,
+                    args.query.output,
+                    &expression,
+                )
+                .await
+                .map_err(RazelError::from_query)
+            }
         }
     };
 
