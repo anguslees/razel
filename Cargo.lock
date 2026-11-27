@@ -33,11 +33,21 @@ version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fffa22cfabc0cec55c8eef8e950504374bf61872681e8f82fc35227c426605f"
 dependencies = [
- "allocative_derive",
+ "allocative_derive 0.3.6",
  "bumpalo",
  "ctor",
  "hashbrown 0.16.1",
  "num-bigint",
+]
+
+[[package]]
+name = "allocative"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "816008faf4bc90f7f8f6d94e90b6da89f052ad9e8cf86235544601ebc0a60aed"
+dependencies = [
+ "allocative_derive 0.4.0",
+ "ctor",
 ]
 
 [[package]]
@@ -49,6 +59,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "allocative_derive"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f698c76c55e0ffa4c2ec17daa995e0b9b51a353f55efef512f2a2747b146903"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -1007,7 +1028,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1854,7 +1875,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1928,7 +1949,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2b6c3024f51bd32fc2fbadedb27783151515348f24cdf2e0ad83270b844f449"
 dependencies = [
- "allocative",
+ "allocative 0.3.7",
  "anyhow",
  "async-trait",
  "blake3",
@@ -2379,7 +2400,7 @@ dependencies = [
 name = "razel"
 version = "0.1.0"
 dependencies = [
- "allocative",
+ "allocative 0.4.0",
  "anyhow",
  "assert_cmd",
  "assert_fs",
@@ -2512,7 +2533,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2869,7 +2890,7 @@ version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96df274e6a186b63cb91f3f7014a0badd228f1ed174fe0d617ddba41ed0c6459"
 dependencies = [
- "allocative",
+ "allocative 0.3.7",
  "anyhow",
  "blake3",
  "bumpalo",
@@ -2926,7 +2947,7 @@ version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "234877898fd216af93b2f5798b08cbbdc1a2e8f16a622a258b1db23a61a1c4ba"
 dependencies = [
- "allocative",
+ "allocative 0.3.7",
  "dupe",
  "equivalent",
  "fxhash",
@@ -2942,7 +2963,7 @@ version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7492c571c531e68099c911cfd909d32659f1cc0910cf3adee9fce66e39d21f14"
 dependencies = [
- "allocative",
+ "allocative 0.3.7",
  "annotate-snippets",
  "anyhow",
  "derivative",
@@ -3068,7 +3089,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3570,7 +3591,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
